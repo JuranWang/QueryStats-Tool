@@ -1,0 +1,25 @@
+# 本地虚拟环境——同事自己按 README 装，不用传
+.venv/
+
+# 本地数据——里面是真实客户问卷数据、AI 分析结果，以及在设置页面填的 API key
+# （明文存在 app.db 里，没有加密）。这些东西只应该留在自己电脑上，
+# 绝对不能传到 GitHub 上（哪怕是私有仓库也不建议，私有仓库的协作者一样能看到）。
+data/app.db
+data/app.db-journal
+data/app.db-wal
+data/app.db-shm
+data/backups/
+data/uploads/
+data/exports/
+data/translation_cache.json
+
+# Python 缓存/测试产物
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 系统/编辑器杂项文件
+.DS_Store
+
+# 临时验证脚本，不属于正式代码
+verify_streamlit_render.py
