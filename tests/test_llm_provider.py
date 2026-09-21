@@ -118,6 +118,59 @@ def test_get_provider_translation_purpose_uses_override_when_configured(tmp_path
     conn.close()
 
 
+def test_get_provider_constructs_minimax_as_openai_compatible(tmp_path, monkeypatch):
+    conn = db.init_db(str(tmp_path / "survey.sqlite"))
+    db.set_setting(conn, "llm_provider", "minimax")
+    db.set_setting(conn, "llm_model", "MiniMax-Text-01")
+    monkeypatch.setenv("MINIMAX_API_KEY", "fake-minimax-key")
+
+    provider = get_provider(conn)
+
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.model == "MiniMax-Text-01"
+    conn.close()
+
+
+def test_get_provider_custom_reads_base_url_from_settings(tmp_path, monkeypatch):
+    # "自定义 API"——同事各自用的供应商不在预置列表里，填 base_url + api key + 模型名
+    # 就该能用，不需要改代码。
+    conn = db.init_db(str(tmp_path / "survey.sqlite"))
+    db.set_setting(conn, "llm_provider", "custom")
+    db.set_setting(conn, "llm_model", "some-vendors-model-name")
+    db.set_setting(conn, "custom_base_url", "https://example-vendor.com/v1")
+    monkeypatch.setenv("CUSTOM_API_KEY", "fake-custom-key")
+
+    provider = get_provider(conn)
+
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.model == "some-vendors-model-name"
+    assert provider._client.base_url == "https://example-vendor.com/v1/"
+    conn.close()
+
+
+def test_get_provider_custom_without_base_url_raises_clear_error(tmp_path, monkeypatch):
+    conn = db.init_db(str(tmp_path / "survey.sqlite"))
+    db.set_setting(conn, "llm_provider", "custom")
+    db.set_setting(conn, "llm_model", "some-model")
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.setenv("CUSTOM_API_KEY", "fake-custom-key")
+
+    with pytest.raises(RuntimeError, match="没有填 base_url"):
+        get_provider(conn)
+    conn.close()
+
+
+def test_get_provider_custom_without_model_raises_clear_error(tmp_path, monkeypatch):
+    conn = db.init_db(str(tmp_path / "survey.sqlite"))
+    db.set_setting(conn, "llm_provider", "custom")
+    db.set_setting(conn, "custom_base_url", "https://example-vendor.com/v1")
+    monkeypatch.setenv("CUSTOM_API_KEY", "fake-custom-key")
+
+    with pytest.raises(RuntimeError, match="没有填模型名"):
+        get_provider(conn)
+    conn.close()
+
+
 def test_delete_setting_clears_override_back_to_default(tmp_path):
     conn = db.init_db(str(tmp_path / "survey.sqlite"))
     db.set_setting(conn, "llm_provider::translation", "deepseek")

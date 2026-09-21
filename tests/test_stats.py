@@ -113,3 +113,44 @@ def test_crosstab_counts_denominator_includes_group_member_with_missing_answer()
     assert result.loc["Yes", "A"] == "1人（50.0%）"
     assert result.loc["Yes", "B"] == "1人（100.0%）"
     assert result.loc["Yes", "合计"] == "2人（66.7%）"
+
+
+def test_crosstab_counts_group_totals_override_supports_exploded_multi_select():
+    # 交叉分析"对比到哪道题"是多选题的场景：调用方会把"人 × 选中的选项"展开成
+    # 一行一个再传进来——组 A 只有 2 个人，但 A 组里 1 号选了 2 个选项、2 号选了
+    # 1 个选项，展开后 A 组出现 3 行。如果 crosstab_counts 还按展开后的行数
+    # （df[group_col].eq("A").sum() == 3）当分母，会错误地把 A 组算成 3 个人；
+    # 显式传 group_totals={"A": 2, "B": 1} 之后，分母必须用这份真实人数，不能被
+    # 展开动作污染。
+    exploded = pd.DataFrame(
+        {
+            "group": ["A", "A", "A", "B"],
+            "answer": ["苹果", "香蕉", "苹果", "苹果"],
+        }
+    )
+
+    result = crosstab_counts(
+        exploded,
+        "group",
+        "answer",
+        group_order=["A", "B"],
+        group_totals={"A": 2, "B": 1},
+    )
+
+    # A 组真实只有 2 人，但 2 人一共选了 3 次"苹果"里的 2 次——分母是 2（人数），
+    # 不是 3（展开后的行数）。
+    assert result.loc["苹果", "A"] == "2人（100.0%）"
+    assert result.loc["香蕉", "A"] == "1人（50.0%）"
+    assert result.loc["苹果", "B"] == "1人（100.0%）"
+    # 合计的分母也要用 group_totals 相加（2+1=3），不是展开后的行数（3+1=4）。
+    assert result.loc["苹果", "合计"] == "3人（100.0%）"
+
+
+def test_crosstab_counts_without_group_totals_keeps_old_default_behavior():
+    # 不传 group_totals 的调用方（单选题那条路）行为要跟改动前完全一样。
+    df = pd.DataFrame({"group": ["A", "A", "B"], "answer": ["Yes", "No", "Yes"]})
+
+    result = crosstab_counts(df, "group", "answer")
+
+    assert result.loc["Yes", "A"] == "1人（50.0%）"
+    assert result.loc["Yes", "B"] == "1人（100.0%）"

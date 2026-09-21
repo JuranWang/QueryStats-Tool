@@ -3,7 +3,8 @@
 - 没有 SQLite 持久化、没有项目管理，刷新页面就清空——正式版会接 engine/db.py（Milestone 3a 已建好那几张表）。
 - 多选题的分组映射很简陋（同一个"分组键"打成 multi 类型的列会被合并）。
 - 筛选题的"未通过筛选"判定只支持单选题（选中的值 = 未通过）；数值/开放题标成筛选题时会展示，但不参与过滤。
-- ⑧交叉分析「对比到哪道题」只支持单选题，多选题作为对比对象暂不支持。
+- ⑧交叉分析「对比到哪道题」单选/多选题都支持了（多选题按"这个分组里有百分之多少的人
+  选了这个选项"算，分母是分组人数，不是选中次数——一个人选多个选项不会把分母算错）。
 - ⑥⑦用了新依赖 streamlit-aggrid 做分组表头着色+点击选中；这块我只做到"数据组装逻辑单独测过、
   服务器能正常起来"，表头颜色和点击选中的真实效果需要你自己点一下确认——没有浏览器没法替你点。
 - AI 相关功能（分类/翻译/洞察）需要在首页配置好 AI 供应商 + API key（或者设对应的环境变量），没配的话会提示，不会崩。
@@ -2352,12 +2353,14 @@ with st.container(key="section_paper_7"):
 #    默认每个选项各自成一个维度（对应"圈选的选项可以单独成为一个维度"），可以合并几个
 #    选项成一个自定义命名的维度（比如叫"圈选组"），可以新增/删除维度、无上限，
 #    对应设计文档原话"维度支持无限增加，其对比选项支持增删"。
-#    "对比到哪道题"这版只支持单选题（crosstab_counts 目前只吃标量答案列）。
+#    "对比到哪道题"单选/多选题都支持——多选题会把"人 × 选中的选项"展开成一行一个
+#    再交给 crosstab_counts，分母显式传成分组人数（见下面 group_totals 那段注释），
+#    不会因为一个人选了好几个选项就把分母算错。
 # ---------------------------------------------------------------------------
 
 with st.container(key="section_paper_8"):
     st.header("8. 交叉分析", anchor="sec8")
-    st.caption("手动配置，不预设。维度数量不限——默认每个选项各自一组，可以合并/改名/增删。「对比到哪道题」这版只支持单选题。")
+    st.caption("手动配置，不预设。维度数量不限——默认每个选项各自一组，可以合并/改名/增删。「对比到哪道题」单选、多选题都支持。")
 
     from_options = {
         f"{u['display_no']}｜{u['title']}": u
@@ -2369,11 +2372,11 @@ with st.container(key="section_paper_8"):
         f"{u['display_no']}｜{u['title']}": u
         for section in CHART_SECTIONS
         for u in raw_table_units[section]
-        if u["kind"] == "single"
+        if u["kind"] in ("single", "multi")
     }
 
     if not from_options or not to_options:
-        st.info("至少需要一道单选/多选题（用来圈人群）和一道单选题（用来对比），才能配置交叉分析。")
+        st.info("至少需要两道单选/多选题（一道用来圈人群，一道用来对比），才能配置交叉分析。")
     else:
         from_key = st.selectbox("1. 从哪道题圈人群", list(from_options.keys()), key="crosstab_from")
         from_unit = from_options[from_key]
@@ -2448,10 +2451,34 @@ with st.container(key="section_paper_8"):
             group_col = source_series.apply(assign_group)
             group_order = [g["name"] for g in valid_groups] + (["其余"] if include_rest else [])
 
-            crosstab_input = pd.DataFrame(
-                {"分组": group_col.values, "对比题答案": df_valid[to_unit["columns"][0]].values}
+            # 分组人数（分母）永远按"每人一行"这份 group_col 算——不管"对比到哪道题"
+            # 是单选还是多选，一个人只能属于一个分组，这个算法本身没问题。提前在这里
+            # 算好、显式传给 crosstab_counts，是因为下面"对比到哪道题"是多选题的分支
+            # 要把数据展开成"人 × 选中的选项"一行一个，展开之后同一个分组会出现好几
+            # 行，如果还让 crosstab_counts 自己按展开后的行数去数分组人数，选得越多
+            # 分母就被撑得越大，百分比会算错——所以分母必须在展开之前、按这份原始
+            # group_col 算好。单选题这条路走这个参数其实跟以前自己算的结果一样，
+            # 只是提前算出来传进去，不影响原来的行为。
+            group_totals = {g: int((group_col == g).sum()) for g in group_order}
+
+            if to_unit["kind"] == "single":
+                crosstab_input = pd.DataFrame(
+                    {"分组": group_col.values, "对比题答案": df_valid[to_unit["columns"][0]].values}
+                )
+            else:
+                # 多选题当"对比到哪道题"：一个人选中的每个选项都要单独算一行
+                # （explode），"这个分组里有百分之多少的人选了这个选项"才算得出来；
+                # 没选任何选项的人，展开后是一行 NaN，crosstab_counts 内部会把这行
+                # dropna 掉（不会被错算成某个具体选项），但不影响他们本来就已经算进
+                # 上面 group_totals 里的分组人数。
+                to_list_series = _multi_select_list_series(df_valid, to_unit["columns"])
+                crosstab_input = pd.DataFrame(
+                    {"分组": group_col.values, "对比题答案": to_list_series.values}
+                ).explode("对比题答案")
+
+            result_table = stats.crosstab_counts(
+                crosstab_input, "分组", "对比题答案", group_order=group_order, group_totals=group_totals
             )
-            result_table = stats.crosstab_counts(crosstab_input, "分组", "对比题答案", group_order=group_order)
             crosstab_title = f"{from_key} 按 {len(valid_groups)} 个维度分组，对比 {to_key} 上的分布"
             st.markdown(f"**{crosstab_title}**")
             st.dataframe(result_table)

@@ -12,9 +12,9 @@ import streamlit as st
 
 from engine import db
 from engine.llm_provider import (
-    OPENROUTER_TRANSLATION_MODEL_PRESETS,
     PROVIDER_API_KEY_ENV,
     PROVIDER_DEFAULT_MODEL,
+    PROVIDER_MODEL_PRESETS,
     TRANSLATION_RECOMMENDED_PROVIDER,
 )
 
@@ -169,21 +169,89 @@ PROVIDER_LABELS = {
     "openai": "OpenAI",
     "deepseek": "DeepSeek",
     "kimi": "Kimi（Moonshot）",
-    "qwen": "Qwen（通义千问，直连 DashScope）",
+    # 阿里云 DashScope 的 key 绑定"开号时选的控制台区域"，大陆账号和国际/新加坡账号
+    # 互不通用，配错了会直接 401、看着完全不像是"账号区域配错了"——拆成两个选项，
+    # 不确定自己是哪种账号的话，两个都试一下就知道了。
+    "qwen": "Qwen（通义千问，大陆账号，直连 DashScope）",
+    "qwen_intl": "Qwen（通义千问，国际/新加坡账号，DashScope International）",
     "grok": "Grok（xAI）",
     "openrouter": "OpenRouter（聚合网关，模型名要带厂商前缀，比如 qwen/qwen-turbo）",
+    "minimax": "MiniMax（国际/全球账号）",
+    "custom": "自定义 API（任何 OpenAI 兼容接口，自己填 base_url）",
 }
+
+CUSTOM_MODEL_SENTINEL = "自定义…"
+
+
+def _pick_model(provider: str, current_model: str | None, key_prefix: str) -> str:
+    """模型名选择器——真实反馈"能不能把模型变成下拉框选项+自定义两种，而不是手动
+    输入"：有核实过命名规律的供应商（见 PROVIDER_MODEL_PRESETS）显示"下拉框 + 自定义"
+    两级选择，不用自己去查、也不容易手滑打错模型名；没有预设的供应商（OpenAI/Kimi/
+    Grok 命名规律没核实过，"自定义 API"更是连供应商是谁都不知道）直接退回手填文本框，
+    比编几个自己也不确定对不对的型号名放进下拉框更负责任。key_prefix 保证同一个
+    供应商在"通用"和"翻译专用"两个区块里的控件 key 不会互相冲突。
+    """
+
+    presets = PROVIDER_MODEL_PRESETS.get(provider)
+    if not presets:
+        return st.text_input(
+            "模型名（供应商的模型命名会变，这里可以随时改）",
+            value=current_model or PROVIDER_DEFAULT_MODEL.get(provider, ""),
+            key=f"{key_prefix}_model_text_{provider}",
+        )
+
+    preset_slugs = [slug for slug, _ in presets]
+    preset_labels = dict(presets)
+    picker_options = preset_slugs + [CUSTOM_MODEL_SENTINEL]
+    default_choice = (
+        current_model
+        if current_model in preset_slugs
+        else (CUSTOM_MODEL_SENTINEL if current_model else preset_slugs[0])
+    )
+    picked = st.selectbox(
+        "模型名",
+        picker_options,
+        format_func=lambda slug: preset_labels.get(slug, slug),
+        index=picker_options.index(default_choice),
+        key=f"{key_prefix}_model_picker_{provider}",
+    )
+    if picked == CUSTOM_MODEL_SENTINEL:
+        return st.text_input(
+            "自定义模型名",
+            value=current_model if current_model not in preset_slugs else "",
+            key=f"{key_prefix}_model_custom_{provider}",
+        )
+    return picked
+
 
 current_provider = db.get_setting(conn, "llm_provider", default="anthropic")
 current_model = db.get_setting(conn, "llm_model", default=PROVIDER_DEFAULT_MODEL.get(current_provider, ""))
 
 st.markdown(f"**当前使用**：{PROVIDER_LABELS.get(current_provider, current_provider)} · 模型 `{current_model}`")
 
+# 加了 Qwen 国际版/MiniMax/自定义 API 之后这一行从 7 家变成 10 家，PROVIDER_LABELS
+# 里那种"给下拉框看的"完整说明文字（比如"Qwen（通义千问，大陆账号，直连
+# DashScope）"）塞进这么窄的一格会被截断，大陆/国际两个 Qwen 截出来的文字长得
+# 一模一样，完全看不出区别。这里单独给这一行用一份简短标签，下拉框里还是用
+# PROVIDER_LABELS 那份完整说明。
+PROVIDER_SHORT_LABELS = {
+    "anthropic": "Claude",
+    "openai": "OpenAI",
+    "deepseek": "DeepSeek",
+    "kimi": "Kimi",
+    "qwen": "Qwen(大陆)",
+    "qwen_intl": "Qwen(国际)",
+    "grok": "Grok",
+    "openrouter": "OpenRouter",
+    "minimax": "MiniMax",
+    "custom": "自定义",
+}
+
 st.markdown("**各供应商 key 配置状态**")
 status_cols = st.columns(len(PROVIDER_LABELS))
 for col, (provider, label) in zip(status_cols, PROVIDER_LABELS.items()):
     has_key = bool(db.get_setting(conn, f"api_key::{provider}", default=None))
-    col.metric(label, "已配置" if has_key else "—")
+    col.metric(PROVIDER_SHORT_LABELS.get(provider, label), "已配置" if has_key else "—")
 
 with st.container(border=True):
     # 不用 st.form——表单里的控件切换不会立刻重跑脚本，切供应商之后模型名默认值要等点了
@@ -197,11 +265,21 @@ with st.container(border=True):
         key="provider_select",
     )
     # key 按供应商区分：切换供应商时，每家自己上次填的（还没保存的）内容不会互相冲掉。
-    model = st.text_input(
-        "模型名（供应商的模型命名会变，这里可以随时改）",
-        value=current_model if provider == current_provider else PROVIDER_DEFAULT_MODEL.get(provider, ""),
-        key=f"provider_model_input_{provider}",
+    model = _pick_model(
+        provider,
+        current_model if provider == current_provider else PROVIDER_DEFAULT_MODEL.get(provider, ""),
+        key_prefix="provider",
     )
+    base_url_input = ""
+    if provider == "custom":
+        # "自定义 API"——同事们各有各习惯用的供应商，不可能每一家都单独接一遍；只要
+        # 对方提供 OpenAI 兼容的 chat completions 接口，填这里的 base_url + 上面的
+        # 模型名 + 下面的 API key 就能用。
+        base_url_input = st.text_input(
+            "base_url（对方文档里的 OpenAI 兼容接口地址，通常以 /v1 结尾）",
+            value=db.get_setting(conn, "custom_base_url", default=""),
+            key="provider_custom_base_url",
+        )
     api_key_input = st.text_input(
         f"API key（不填就留空——不会清空已经存的 key；环境变量兜底：{PROVIDER_API_KEY_ENV.get(provider, '')}）",
         type="password",
@@ -210,6 +288,8 @@ with st.container(border=True):
     if st.button("保存", key="provider_settings_save"):
         db.set_setting(conn, "llm_provider", provider)
         db.set_setting(conn, "llm_model", model)
+        if provider == "custom" and base_url_input.strip():
+            db.set_setting(conn, "custom_base_url", base_url_input.strip())
         if api_key_input.strip():
             db.set_setting(conn, f"api_key::{provider}", api_key_input.strip())
         st.success("已保存。")
@@ -246,12 +326,9 @@ else:
         f"· 模型 `{current_translation_model or PROVIDER_DEFAULT_MODEL.get(current_translation_provider, '')}`"
     )
 
-CUSTOM_MODEL_SENTINEL = "自定义…"
-
 with st.container(border=True):
-    # 同样不用 st.form——OpenRouter 选了预设模型还是"自定义"要立刻切换对应的控件，
-    # 表单里的控件切换不会马上重跑脚本，会看到刚选完供应商、模型名还是上一家供应商的
-    # 默认值（就是你截图里看到的那种情况）。
+    # 同样不用 st.form——切供应商要立刻切换对应的模型下拉框，表单里的控件切换不会
+    # 马上重跑脚本，会看到刚选完供应商、模型名还是上一家供应商的默认值。
     default_index = (
         0
         if current_translation_provider is None
@@ -273,42 +350,20 @@ with st.container(border=True):
 
     translation_model = None
     translation_api_key_input = ""
+    translation_base_url_input = ""
     if translation_provider != INHERIT_SENTINEL:
-        if translation_provider == "openrouter":
-            # OpenRouter 模型名要带厂商前缀，手输容易输错——给一份常用中英翻译模型的
-            # 预设，选了预设之外的需求还能切到"自定义"手填，不锁死。
-            preset_slugs = [slug for slug, _ in OPENROUTER_TRANSLATION_MODEL_PRESETS]
-            preset_labels = dict(OPENROUTER_TRANSLATION_MODEL_PRESETS)
-            picker_options = preset_slugs + [CUSTOM_MODEL_SENTINEL]
-            default_choice = (
-                current_translation_model
-                if current_translation_model in preset_slugs
-                else (CUSTOM_MODEL_SENTINEL if current_translation_model else preset_slugs[0])
-            )
-            picked = st.selectbox(
-                "翻译专用模型",
-                picker_options,
-                format_func=lambda slug: preset_labels.get(slug, slug),
-                index=picker_options.index(default_choice),
-                key="translation_model_picker_openrouter",
-            )
-            if picked == CUSTOM_MODEL_SENTINEL:
-                translation_model = st.text_input(
-                    "自定义模型名（要带厂商前缀，比如 mistralai/mistral-small）",
-                    value=current_translation_model if current_translation_model not in preset_slugs else "",
-                    key="translation_model_custom_openrouter",
-                )
-            else:
-                translation_model = picked
-        else:
-            translation_model = st.text_input(
-                "翻译专用模型名",
-                value=(
-                    current_translation_model
-                    if translation_provider == current_translation_provider
-                    else PROVIDER_DEFAULT_MODEL.get(translation_provider, "")
-                ),
-                key=f"translation_model_input_{translation_provider}",
+        translation_model = _pick_model(
+            translation_provider,
+            current_translation_model
+            if translation_provider == current_translation_provider
+            else PROVIDER_DEFAULT_MODEL.get(translation_provider, ""),
+            key_prefix="translation",
+        )
+        if translation_provider == "custom":
+            translation_base_url_input = st.text_input(
+                "base_url（跟上面「通用」的自定义 API 共用同一个 base_url 设置）",
+                value=db.get_setting(conn, "custom_base_url", default=""),
+                key="translation_custom_base_url",
             )
         translation_api_key_input = st.text_input(
             f"API key（跟上面通用供应商共用同一个 key 存储位置，同一家供应商不用重复填；"
@@ -324,6 +379,8 @@ with st.container(border=True):
         else:
             db.set_setting(conn, "llm_provider::translation", translation_provider)
             db.set_setting(conn, "llm_model::translation", translation_model)
+            if translation_provider == "custom" and translation_base_url_input.strip():
+                db.set_setting(conn, "custom_base_url", translation_base_url_input.strip())
             if translation_api_key_input.strip():
                 db.set_setting(conn, f"api_key::{translation_provider}", translation_api_key_input.strip())
         st.success("已保存。")

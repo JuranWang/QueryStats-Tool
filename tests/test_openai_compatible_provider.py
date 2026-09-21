@@ -130,9 +130,11 @@ def test_get_provider_uses_default_model_when_not_configured(tmp_path, monkeypat
     conn.close()
 
 
-def test_get_provider_supports_openrouter_with_qwen_turbo_default(tmp_path, monkeypatch):
-    # 走 OpenRouter 聚合网关用 qwen-turbo，而不是直连 DashScope——同一套 OpenAI 兼容客户端，
-    # 只是 base_url/模型名前缀不一样，不需要专门给 OpenRouter 写新的 provider 类。
+def test_get_provider_supports_openrouter_with_qwen_flash_default(tmp_path, monkeypatch):
+    # 走 OpenRouter 聚合网关，而不是直连 DashScope——同一套 OpenAI 兼容客户端，只是
+    # base_url/模型名前缀不一样，不需要专门给 OpenRouter 写新的 provider 类。默认模型
+    # 从 qwen-turbo 换成了 qwen3.8-flash——阿里云官方文档说 qwen-turbo"不再更新，
+    # 建议迁移到 qwen-flash"，默认值跟着换成当前推荐的档位。
     conn = db.init_db(str(tmp_path / "survey.sqlite"))
     db.set_setting(conn, "llm_provider::translation", "openrouter")
     monkeypatch.setenv("OPENROUTER_API_KEY", "from-env")
@@ -143,5 +145,5 @@ def test_get_provider_supports_openrouter_with_qwen_turbo_default(tmp_path, monk
     client_class.assert_called_once_with(
         api_key="from-env", base_url="https://openrouter.ai/api/v1"
     )
-    assert provider.model == "qwen/qwen-turbo"
+    assert provider.model == "qwen/qwen3.8-flash"
     conn.close()
