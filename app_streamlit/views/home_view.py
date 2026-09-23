@@ -11,6 +11,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import streamlit as st
 
 from engine import db
+from engine.i18n import t
+from app_streamlit.lang_ui import init_language
 from engine.llm_provider import (
     PROVIDER_API_KEY_ENV,
     PROVIDER_DEFAULT_MODEL,
@@ -28,9 +30,10 @@ def get_conn():
 
 
 conn = get_conn()
+init_language(conn)
 
-st.title("问卷可视化分析工具")
-st.caption("首页：管理项目（对应不同客户）、配置 AI 供应商。")
+st.title(t('问卷可视化分析工具'))
+st.caption(t('首页：管理项目（对应不同客户）、配置 AI 供应商。'))
 
 # ---------------------------------------------------------------------------
 # 数据备份——get_conn() 里的 db.init_db 已经顺手做过一次自动备份检查了，这里只是
@@ -38,13 +41,9 @@ st.caption("首页：管理项目（对应不同客户）、配置 AI 供应商�
 # 手动入口。真正的备份逻辑（在线备份 API、节流、旧备份轮转）都在 engine/db.py。
 # ---------------------------------------------------------------------------
 
-with st.expander("数据备份", expanded=False):
+with st.expander(t('数据备份'), expanded=False):
     st.caption(
-        "数据库会在每次打开这个 app 时自动检查要不要备份（默认最多 6 小时备份一次，"
-        "备份文件存在 data/backups/ 目录，保留最近 30 份）。"
-        "**这份备份和正式数据库在同一块硬盘上**——如果这台机器/这个服务器本身是临时性"
-        "存储（比如某些云平台的免费额度，重启就清空），务必把 data/backups/ 目录"
-        "也同步到云盘、移动硬盘之类的外部位置，只在本地多存一份救不了这种情况。"
+        t('数据库会在每次打开这个 app 时自动检查要不要备份（默认最多 6 小时备份一次，备份文件存在 data/backups/ 目录，保留最近 30 份）。**这份备份和正式数据库在同一块硬盘上**——如果这台机器/这个服务器本身是临时性存储（比如某些云平台的免费额度，重启就清空），务必把 data/backups/ 目录也同步到云盘、移动硬盘之类的外部位置，只在本地多存一份救不了这种情况。')
     )
 
     backups_dir = PROJECT_ROOT / "data" / "backups"
@@ -56,32 +55,32 @@ with st.expander("数据备份", expanded=False):
         latest_time = _datetime.datetime.fromtimestamp(latest.stat().st_mtime)
         total_size_mb = sum(f.stat().st_size for f in existing_backups) / (1024 * 1024)
         st.caption(
-            f"目前有 {len(existing_backups)} 份备份，最近一份：{latest_time:%Y-%m-%d %H:%M}，"
-            f"共占用 {total_size_mb:.1f} MB。"
+            t('目前有 {backup_count} 份备份，最近一份：{latest_time:%Y-%m-%d %H:%M}，共占用 {total_size_mb:.1f} MB。', backup_count=len(existing_backups), latest_time=latest_time, total_size_mb=total_size_mb)
         )
     else:
-        st.caption("还没有备份文件——点下面「立即备份」，或者正常用几次就会自动生成。")
+        st.caption(t('还没有备份文件——点下面「立即备份」，或者正常用几次就会自动生成。'))
 
-    if st.button("立即备份", key="manual_backup_button"):
+    if st.button(t('立即备份'), key="manual_backup_button"):
         backup_path = db.backup_database(conn, str(DB_PATH), force=True)
         if backup_path:
-            st.toast(f"已备份到 {backup_path}")
+            st.toast(t('已备份到 {backup_path}', backup_path=backup_path))
         else:
-            st.toast("备份失败——数据库文件不存在或写入出错。")
+            st.toast(t('备份失败——数据库文件不存在或写入出错。'))
         st.rerun()
 
 # ---------------------------------------------------------------------------
 # 项目列表
 # ---------------------------------------------------------------------------
 
-st.header("项目列表")
+st.header(t('项目列表'))
 
 # 分析页面没有项目上下文时会自动开一个项目（origin='auto'）才能保存，名字是按问卷题目
 # 猜的/AI 总结的，不是你自己新建的——这里给个筛选，省得这些占位项目跟你手动建的项目
 # 混在一起、列表越滚越长。默认只看"手动新建"，自动生成的一键切过去看，不是删掉了。
 origin_filter = st.radio(
-    "显示哪些项目",
+    t('显示哪些项目'),
     ["手动新建", "自动生成", "全部"],
+    format_func=lambda value: t(value),
     horizontal=True,
     key="project_origin_filter",
 )
@@ -98,57 +97,56 @@ else:
     projects = all_projects
 
 if not all_projects:
-    st.info("还没有项目，在下面新建一个。")
+    st.info(t('还没有项目，在下面新建一个。'))
 elif not projects:
-    st.info(f"没有「{origin_filter}」的项目——切到「全部」看看，或者去下面新建一个。")
+    st.info(t('没有「{origin}」的项目——切到「全部」看看，或者去下面新建一个。', origin=t(origin_filter)))
 else:
     for p in projects:
         col_name, col_lang, col_open, col_rename, col_delete = st.columns([3, 3, 1, 1, 1])
-        col_name.markdown(f"**{p['name']}**")
+        # Translate the system placeholder without changing persisted or user-entered names.
+        display_name = t("未命名项目") if p["origin"] == "auto" and p["name"] == "未命名项目" else p["name"]
+        col_name.markdown(f"**{display_name}**")
         if p["origin"] == "auto":
-            col_name.caption("自动生成 · 按问卷题目自动命名，不是手动新建的")
-        col_lang.caption(f"{p['source_lang']} → {p['target_lang']} · 建于 {p['created_at']}")
-        if col_open.button("打开", key=f"open_project_{p['id']}"):
+            col_name.caption(t('自动生成 · 按问卷题目自动命名，不是手动新建的'))
+        col_lang.caption(t('{source_lang} → {target_lang} · 建于 {created_at}', source_lang=p['source_lang'], target_lang=p['target_lang'], created_at=p['created_at']))
+        if col_open.button(t('打开'), key=f"open_project_{p['id']}"):
             st.session_state["current_project_id"] = p["id"]
             st.switch_page("views/project_view.py")
 
-        with col_rename.popover("重命名"):
-            new_name = st.text_input("新项目名", value=p["name"], key=f"rename_project_input_{p['id']}")
-            if st.button("保存", key=f"rename_project_save_{p['id']}"):
+        with col_rename.popover(t('重命名')):
+            new_name = st.text_input(t('新项目名'), value=p["name"], key=f"rename_project_input_{p['id']}")
+            if st.button(t('保存'), key=f"rename_project_save_{p['id']}"):
                 if new_name.strip():
                     db.rename_project(conn, p["id"], new_name.strip())
                     st.rerun()
                 else:
-                    st.error("项目名不能为空。")
+                    st.error(t('项目名不能为空。'))
 
         # 删除是不可逆操作（连带项目下所有问卷分析一起删）——popover 本身就是第一步确认，
         # 里面还要再点一次「确认删除」，不会一下手滑就删掉。
-        with col_delete.popover("删除"):
-            st.warning(f"确定删除项目「{p['name']}」？连同它名下所有问卷分析一起删除，不可恢复。")
-            if st.button("确认删除", key=f"delete_project_confirm_{p['id']}", type="primary"):
+        with col_delete.popover(t('删除')):
+            st.warning(t('确定删除项目「{project_name}」？连同它名下所有问卷分析一起删除，不可恢复。', project_name=display_name))
+            if st.button(t('确认删除'), key=f"delete_project_confirm_{p['id']}", type="primary"):
                 db.delete_project(conn, p["id"])
                 if st.session_state.get("current_project_id") == p["id"]:
                     st.session_state["current_project_id"] = None
                 st.rerun()
 
-with st.expander("+ 新建项目"):
+with st.expander(t('+ 新建项目')):
     with st.form("new_project_form"):
-        name = st.text_input("项目名（对应客户/项目名称）")
+        name = st.text_input(t('项目名（对应客户/项目名称）'))
         col1, col2 = st.columns(2)
-        source_lang = col1.text_input("问卷原始语言", value="en")
-        target_lang = col2.text_input("报告语言", value="zh-CN")
-        submitted = st.form_submit_button("创建")
+        source_lang = col1.text_input(t('问卷原始语言'), value="en")
+        target_lang = col2.text_input(t('报告语言'), value="zh-CN")
+        submitted = st.form_submit_button(t('创建'))
         if submitted:
             if not name.strip():
-                st.error("项目名不能为空。")
+                st.error(t('项目名不能为空。'))
             else:
                 new_id = db.create_project(conn, name.strip(), source_lang, target_lang)
                 st.session_state["current_project_id"] = new_id
-                st.success(f"项目「{name}」创建成功。")
+                st.success(t('项目「{name}」创建成功。', name=name))
                 st.switch_page("views/project_view.py")
-
-if st.button("拖拽排版试验（临时入口，测试用）"):
-    st.switch_page("views/dragdrop_test.py")
 
 st.divider()
 
@@ -156,12 +154,9 @@ st.divider()
 # API / 模型设置
 # ---------------------------------------------------------------------------
 
-st.header("API / 模型设置")
+st.header(t('API / 模型设置'))
 st.warning(
-    "填的 API key 会明文存在本机 `data/app.db` 这个 SQLite 文件里，不加密——现在这个工具"
-    "单机跑、单人用，这个风险可以接受；以后如果要多人共享或部署到服务器，这块必须重做"
-    "（至少加密存储，理想是不落库、走系统 keychain 或环境变量）。不放心的话也可以不填这里，"
-    "改用环境变量（下面每个供应商旁边写了对应的环境变量名），效果一样，只是每次开新终端要自己设。"
+    t('填的 API key 会明文存在本机 `data/app.db` 这个 SQLite 文件里，不加密——现在这个工具单机跑、单人用，这个风险可以接受；以后如果要多人共享或部署到服务器，这块必须重做（至少加密存储，理想是不落库、走系统 keychain 或环境变量）。不放心的话也可以不填这里，改用环境变量（下面每个供应商旁边写了对应的环境变量名），效果一样，只是每次开新终端要自己设。')
 )
 
 PROVIDER_LABELS = {
@@ -195,7 +190,7 @@ def _pick_model(provider: str, current_model: str | None, key_prefix: str) -> st
     presets = PROVIDER_MODEL_PRESETS.get(provider)
     if not presets:
         return st.text_input(
-            "模型名（供应商的模型命名会变，这里可以随时改）",
+            t('模型名（供应商的模型命名会变，这里可以随时改）'),
             value=current_model or PROVIDER_DEFAULT_MODEL.get(provider, ""),
             key=f"{key_prefix}_model_text_{provider}",
         )
@@ -209,15 +204,15 @@ def _pick_model(provider: str, current_model: str | None, key_prefix: str) -> st
         else (CUSTOM_MODEL_SENTINEL if current_model else preset_slugs[0])
     )
     picked = st.selectbox(
-        "模型名",
+        t('模型名'),
         picker_options,
-        format_func=lambda slug: preset_labels.get(slug, slug),
+        format_func=lambda slug: t(preset_labels.get(slug, slug)),
         index=picker_options.index(default_choice),
         key=f"{key_prefix}_model_picker_{provider}",
     )
     if picked == CUSTOM_MODEL_SENTINEL:
         return st.text_input(
-            "自定义模型名",
+            t('自定义模型名'),
             value=current_model if current_model not in preset_slugs else "",
             key=f"{key_prefix}_model_custom_{provider}",
         )
@@ -227,7 +222,7 @@ def _pick_model(provider: str, current_model: str | None, key_prefix: str) -> st
 current_provider = db.get_setting(conn, "llm_provider", default="anthropic")
 current_model = db.get_setting(conn, "llm_model", default=PROVIDER_DEFAULT_MODEL.get(current_provider, ""))
 
-st.markdown(f"**当前使用**：{PROVIDER_LABELS.get(current_provider, current_provider)} · 模型 `{current_model}`")
+st.markdown(t('**当前使用**：{provider_label} · 模型 `{model}`', provider_label=t(PROVIDER_LABELS.get(current_provider, current_provider)), model=current_model))
 
 # 加了 Qwen 国际版/MiniMax/自定义 API 之后这一行从 7 家变成 10 家，PROVIDER_LABELS
 # 里那种"给下拉框看的"完整说明文字（比如"Qwen（通义千问，大陆账号，直连
@@ -247,20 +242,20 @@ PROVIDER_SHORT_LABELS = {
     "custom": "自定义",
 }
 
-st.markdown("**各供应商 key 配置状态**")
+st.markdown(t('**各供应商 key 配置状态**'))
 status_cols = st.columns(len(PROVIDER_LABELS))
 for col, (provider, label) in zip(status_cols, PROVIDER_LABELS.items()):
     has_key = bool(db.get_setting(conn, f"api_key::{provider}", default=None))
-    col.metric(PROVIDER_SHORT_LABELS.get(provider, label), "已配置" if has_key else "—")
+    col.metric(t(PROVIDER_SHORT_LABELS.get(provider, label)), t('已配置') if has_key else "—")
 
 with st.container(border=True):
     # 不用 st.form——表单里的控件切换不会立刻重跑脚本，切供应商之后模型名默认值要等点了
     # 保存才会刷新，体验很怪（这个问题在翻译专用那块暴露得更明显，见下面 OpenRouter
     # 预设那段）。改成普通控件 + 手动保存按钮，选哪个供应商立刻就能看到对应的默认模型名。
     provider = st.selectbox(
-        "选用哪个供应商",
+        t('选用哪个供应商'),
         list(PROVIDER_LABELS.keys()),
-        format_func=lambda p: PROVIDER_LABELS[p],
+        format_func=lambda p: t(PROVIDER_LABELS[p]),
         index=list(PROVIDER_LABELS.keys()).index(current_provider) if current_provider in PROVIDER_LABELS else 0,
         key="provider_select",
     )
@@ -276,23 +271,23 @@ with st.container(border=True):
         # 对方提供 OpenAI 兼容的 chat completions 接口，填这里的 base_url + 上面的
         # 模型名 + 下面的 API key 就能用。
         base_url_input = st.text_input(
-            "base_url（对方文档里的 OpenAI 兼容接口地址，通常以 /v1 结尾）",
+            t('base_url（对方文档里的 OpenAI 兼容接口地址，通常以 /v1 结尾）'),
             value=db.get_setting(conn, "custom_base_url", default=""),
             key="provider_custom_base_url",
         )
     api_key_input = st.text_input(
-        f"API key（不填就留空——不会清空已经存的 key；环境变量兜底：{PROVIDER_API_KEY_ENV.get(provider, '')}）",
+        t('API key（不填就留空——不会清空已经存的 key；环境变量兜底：{env_name}）', env_name=PROVIDER_API_KEY_ENV.get(provider, '')),
         type="password",
         key=f"provider_api_key_input_{provider}",
     )
-    if st.button("保存", key="provider_settings_save"):
+    if st.button(t('保存'), key="provider_settings_save"):
         db.set_setting(conn, "llm_provider", provider)
         db.set_setting(conn, "llm_model", model)
         if provider == "custom" and base_url_input.strip():
             db.set_setting(conn, "custom_base_url", base_url_input.strip())
         if api_key_input.strip():
             db.set_setting(conn, f"api_key::{provider}", api_key_input.strip())
-        st.success("已保存。")
+        st.success(t('已保存。'))
         st.rerun()
 
 st.divider()
@@ -303,13 +298,9 @@ st.divider()
 # 差距很大。不单独配的话自动退回复用上面的通用设置，不强制谁都得多填一次。
 # ---------------------------------------------------------------------------
 
-st.subheader("翻译专用供应商（省钱用，选填）")
+st.subheader(t('翻译专用供应商（省钱用，选填）'))
 st.caption(
-    "题目/选项翻译、开放题原文翻译走的是这里配的供应商，不单独配就跟上面「通用」一致。"
-    "翻译是短文本、大批量的活，用 DeepSeek / Qwen 这类按官方报价（2026-09 查证）单价"
-    "只有 Claude Haiku 的十分之一左右，中文语感也不差，没必要用旗舰模型翻译选项名这种"
-    "小活。推荐 DeepSeek：便宜、中文语料训练、翻译语感公认扎实；Qwen-Turbo 更便宜一档，"
-    "短选项名够用。"
+    t('题目/选项翻译、开放题原文翻译走的是这里配的供应商，不单独配就跟上面「通用」一致。翻译是短文本、大批量的活，用 DeepSeek / Qwen 这类按官方报价（2026-09 查证）单价只有 Claude Haiku 的十分之一左右，中文语感也不差，没必要用旗舰模型翻译选项名这种小活。推荐 DeepSeek：便宜、中文语料训练、翻译语感公认扎实；Qwen-Turbo 更便宜一档，短选项名够用。')
 )
 
 INHERIT_SENTINEL = "（跟通用一致）"
@@ -319,11 +310,10 @@ current_translation_provider = db.get_setting(conn, "llm_provider::translation",
 current_translation_model = db.get_setting(conn, "llm_model::translation", default=None)
 
 if current_translation_provider is None:
-    st.caption("当前：跟通用一致。")
+    st.caption(t('当前：跟通用一致。'))
 else:
     st.markdown(
-        f"**当前翻译专用**：{PROVIDER_LABELS.get(current_translation_provider, current_translation_provider)} "
-        f"· 模型 `{current_translation_model or PROVIDER_DEFAULT_MODEL.get(current_translation_provider, '')}`"
+        t('**当前翻译专用**：{provider_label} · 模型 `{model}`', provider_label=t(PROVIDER_LABELS.get(current_translation_provider, current_translation_provider)), model=current_translation_model or PROVIDER_DEFAULT_MODEL.get(current_translation_provider, ''))
     )
 
 with st.container(border=True):
@@ -341,9 +331,9 @@ with st.container(border=True):
         default_index = translation_provider_options.index(TRANSLATION_RECOMMENDED_PROVIDER)
 
     translation_provider = st.selectbox(
-        "翻译专用供应商",
+        t('翻译专用供应商'),
         translation_provider_options,
-        format_func=lambda p: PROVIDER_LABELS.get(p, p),
+        format_func=lambda p: t(PROVIDER_LABELS.get(p, p)),
         index=default_index,
         key="translation_provider_select",
     )
@@ -361,18 +351,17 @@ with st.container(border=True):
         )
         if translation_provider == "custom":
             translation_base_url_input = st.text_input(
-                "base_url（跟上面「通用」的自定义 API 共用同一个 base_url 设置）",
+                t('base_url（跟上面「通用」的自定义 API 共用同一个 base_url 设置）'),
                 value=db.get_setting(conn, "custom_base_url", default=""),
                 key="translation_custom_base_url",
             )
         translation_api_key_input = st.text_input(
-            f"API key（跟上面通用供应商共用同一个 key 存储位置，同一家供应商不用重复填；"
-            f"环境变量兜底：{PROVIDER_API_KEY_ENV.get(translation_provider, '')}）",
+            t('API key（跟上面通用供应商共用同一个 key 存储位置，同一家供应商不用重复填；环境变量兜底：{env_name}）', env_name=PROVIDER_API_KEY_ENV.get(translation_provider, '')),
             type="password",
             key=f"translation_api_key_input_{translation_provider}",
         )
 
-    if st.button("保存", key="translation_provider_settings_save"):
+    if st.button(t('保存'), key="translation_provider_settings_save"):
         if translation_provider == INHERIT_SENTINEL:
             db.delete_setting(conn, "llm_provider::translation")
             db.delete_setting(conn, "llm_model::translation")
@@ -383,5 +372,5 @@ with st.container(border=True):
                 db.set_setting(conn, "custom_base_url", translation_base_url_input.strip())
             if translation_api_key_input.strip():
                 db.set_setting(conn, f"api_key::{translation_provider}", translation_api_key_input.strip())
-        st.success("已保存。")
+        st.success(t('已保存。'))
         st.rerun()

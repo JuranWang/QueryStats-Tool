@@ -1,152 +1,160 @@
-# 问卷可视化分析工具
+# Survey Visualization & Analysis Tool
 
-把问卷原始数据（CSV / xlsx，支持 Tally、Prolific、见数/Credamo 等平台导出格式）变成
-可交互的网页分析报告，AI 只做翻译/开放题分类/洞察这些真正需要语义判断的事，所有统计
-数字都是 Python 算好的，AI 不碰数字、不允许编数字。详细的功能框架和设计过程见仓库里
-的 `设计文档-v0.*.md`（按版本号从旧到新）。
+[中文说明 → README.zh-CN.md](README.zh-CN.md)
 
-## 环境要求
+Turn raw survey data (CSV / xlsx — exports from Tally, Prolific, Credamo and similar platforms
+are supported) into an interactive web analysis report. AI is only used for things that
+genuinely need semantic judgement — translation, open-ended answer classification, insights.
+**Every number is computed by Python; the AI never touches or invents figures.**
+The design history is in `设计文档-v0.*.md` (Chinese, oldest to newest).
 
-- Python 3.11（开发时锁定的版本；`requirements.txt` 是这个版本下 `pip freeze` 出来的
-  精确版本号，换成别的 Python 大版本不保证兼容）
-- 一个 LLM 供应商的 API key（可选，不配也能用——只是不能用 AI 翻译/分类/洞察这几个
-  功能，纯统计图表和 Word 导出不需要 API key）
+The UI is **English by default**; use the **EN / 中文** switch at the top right (next to
+"Deploy") to change language. Your choice is remembered.
 
-## 安装 & 运行
+Current version: see [`VERSION`](VERSION). What changed in each version is in
+[`CHANGELOG.md`](CHANGELOG.md) (newest first).
+
+## Requirements
+
+- Python 3.11 (`requirements.txt` is a `pip freeze` from this version; other major versions
+  are not guaranteed to work).
+- An API key from one LLM provider — **optional**. Without one, everything except AI
+  translation / classification / insights works (charts, statistics, Word/PDF/Markdown export).
+
+## What it handles
+
+Single-choice, multi-select, ranking, open-ended and numeric questions, each with the chart
+type that fits it (ranking questions get one pie per option plus a rank × option summary
+table). Uploading a new file into a project reuses the question types and titles from your
+last saved analysis in it, so you don't re-configure the mapping table every time. Export
+produces Word, PDF and Markdown in one click.
+
+## Install & run
 
 ```bash
-# 1. 克隆仓库
-git clone <这个仓库的地址>
-cd 问卷可视化分析工具
+# 1. Clone
+git clone https://github.com/JuranWang/QueryStats-Tool.git
+cd QueryStats-Tool
 
-# 2. 建虚拟环境、装依赖
+# 2. Create a virtual environment and install dependencies
 python3.11 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# 3. 跑起来
+# 3. Run
 .venv/bin/streamlit run app_streamlit/Home.py
 ```
 
-跑起来之后浏览器会自动打开 `http://localhost:8501`。第一次打开时数据库文件
-（`data/app.db`，SQLite，本地一个文件）和上传/导出用的文件夹会自动建好，不需要手动
-初始化。
+Your browser opens `http://localhost:8501`. On first launch the database (`data/app.db`,
+a single local SQLite file) and the upload/export folders are created automatically.
 
-如果这一步卡住或者报错，把报错信息丢给你自己的 Codex / Claude Code，让它对着这份
-README 和报错信息帮你排查——这类环境问题（Python 版本不对、某个系统库缺失）跟具体
-电脑环境有关，不是这个项目本身的逻辑问题。
+If something fails, paste the error together with this README into your own AI coding tool
+(Claude Code, Codex, …) and let it debug — environment problems (wrong Python version,
+missing system library) depend on your machine, not on this project.
 
-### 可选：Mac 上双击启动（不用每次敲命令行）
+### Optional: double-click launcher on macOS
 
-环境装好之后（上面的第 1、2 步），项目目录里有一个 `启动问卷分析工具.command`
-文件，双击它就能打开这个工具——它会检查本地服务是不是已经在跑，没跑就启动，
-跑着的话直接打开浏览器，不会重复启动。想在桌面上放一个入口，把这个文件拖到
-桌面上（或者建一个替身/快捷方式）就行，不需要放在项目文件夹里也能正常用。
+After steps 1–2, the project folder contains `启动问卷分析工具.command`. Double-click it to
+open the tool: it checks whether the local server is already running, starts it if not, and
+opens the browser. Drag the file to your Desktop (or make an alias) to have a shortcut there.
+The first time, macOS may warn about an "unidentified developer" — right-click the file,
+choose "Open", and confirm once.
 
-第一次双击可能会被 macOS 拦一下（提示"来自身份不明的开发者"），这是正常的——
-右键点这个文件选"打开"，再确认一次就行，之后就不会再提示了。
+## Configure an AI provider (optional)
 
-## 配置 AI 供应商（可选）
+Open the home page → **API / Model settings**, pick a provider, choose a model from the
+dropdown (or "Custom…" to type any model name), paste your API key, and save.
 
-打开首页(`http://localhost:8501`) → "API / 模型设置"，选供应商、填 API key，保存后
-立刻生效。支持的供应商：Anthropic (Claude)、OpenAI、DeepSeek、Kimi (Moonshot)、
-Qwen (DashScope)、Grok (xAI)、OpenRouter（一个 key 能调用其它厂商大部分模型）。
+Supported: Anthropic (Claude), OpenAI, DeepSeek, Kimi (Moonshot), Qwen (Alibaba DashScope —
+separate entries for **mainland-China** and **international/Singapore** accounts, since keys
+are not interchangeable), Grok (xAI), OpenRouter (one key, most vendors' models), MiniMax, and
+**Custom API** — any OpenAI-compatible endpoint: enter its base URL, model name and key.
 
-也可以不在界面里填，改用环境变量（两种方式二选一，界面里填的优先级更高）：
+Instead of the UI you can use environment variables (the UI value wins if both are set):
 
-| 供应商 | 环境变量 |
+| Provider | Environment variable |
 |---|---|
 | Anthropic | `ANTHROPIC_API_KEY` |
 | OpenAI | `OPENAI_API_KEY` |
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | Kimi | `MOONSHOT_API_KEY` |
-| Qwen | `DASHSCOPE_API_KEY` |
+| Qwen (mainland) | `DASHSCOPE_API_KEY` |
+| Qwen (international) | `DASHSCOPE_INTL_API_KEY` |
 | Grok | `XAI_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
+| MiniMax | `MINIMAX_API_KEY` |
+| Custom API | `CUSTOM_API_KEY` and `CUSTOM_BASE_URL` |
 
-开放题逐条翻译走的是"翻译专用供应商"，可以在同一个设置页单独配一个更便宜的模型
-（默认推荐 DeepSeek），不配就退回跟分类/洞察用同一个供应商。
+Per-item translation of open-ended answers uses a separate **translation provider**, which
+you can set to a cheaper model on the same page (DeepSeek is suggested); if unset, it falls
+back to the general provider.
 
-## 两种用法，自己选一种
+## Two ways to use it
 
-这个工具本身**没有账号系统、没有多用户数据隔离**——数据库是本地一个 SQLite 文件，
-设计上就是"一个人（或一个小团队内部信任着用）在自己控制的一台机器上运行"，不是
-一个可以直接对外提供服务的多租户产品。基于这个前提，有两种用法：
+The tool has **no accounts and no per-user data isolation** — the database is one local
+SQLite file. It is designed for one person (or a small, mutually-trusting team) running it on
+a machine they control. It is not a multi-tenant service. Two setups follow from that:
 
-### 方案 A：完全本地运行（推荐）
+### Option A: run it fully locally (recommended)
 
-每个人在自己电脑上按上面"安装 & 运行"跑起来，数据只留在自己电脑的
-`data/app.db` 里，谁也看不到别人的数据，也不用担心别人的操作影响自己。
+Everyone runs it on their own computer following "Install & run". Data stays in the local
+`data/app.db`; nobody sees anyone else's data and nobody's actions affect anyone else.
 
-**优点**：数据和 API key 都不离开自己的电脑，分析的是客户的问卷数据、有保密要求
-的话，这一点本身是加分项，不是权宜之计；零运维成本；不同人互相独立，不会互相干扰。
+**Pros**: data and API keys never leave your machine (a real plus for confidential client
+data); zero operations work; users are independent.
+**Cons**: you can't send a colleague a link to a specific analysis (share `data/app.db` or
+export a Word report instead); each person updates their own copy (`git pull` and re-run
+`pip install -r requirements.txt`).
 
-**缺点**：没法直接把某份分析结果的链接发给同事看（要看就得共享 `data/app.db` 文件，
-或者导出 Word 报告发过去）；每个人要自己维护一份代码更新（`git pull` + 重新
-`pip install -r requirements.txt`）。
+### Option B: deploy to a server you control
 
-### 方案 B：自己部署到一台你控制的服务器/云主机
+For one shared URL, deploy to a server/VM **with persistent disk** (an always-on cloud VM, or
+Docker with a persistent volume). It runs exactly like locally
+(`streamlit run app_streamlit/Home.py`), just exposed to your team. Same code, same database
+design — the only requirement is that `data/` survives restarts and redeploys.
 
-如果想要一个大家都能访问的固定网址，可以把这份代码部署到你自己控制、**有持久化磁盘**
-的服务器或云主机上（比如一台常年开着的云服务器、或者带持久化 volume 的 Docker 部署），
-跑法跟本地完全一样（`streamlit run app_streamlit/Home.py`），只是换成在服务器上跑、
-把端口开放出来给大家访问。
+**Not recommended**: free hosting with ephemeral storage (e.g. Streamlit Community Cloud).
+Such platforms may wipe `data/app.db` on restart/redeploy, silently losing every project and
+analysis. If you must use one, you need an external persistent database — beyond this
+tool's current design.
 
-**这种部署方式跟"本地运行"用的是完全同一套代码和数据库设计，不需要额外改造**——
-前提是这台服务器的磁盘是持久化的（重启、更新代码都不会清空 `data/` 目录）。
+## Data backup
 
-**明确不建议**：部署到 Streamlit Community Cloud 之类**免费、临时性存储**的托管
-平台——这类平台通常不保证应用重启（比如免费额度睡眠唤醒、平台维护、你自己更新代码
-触发的重新部署）之后磁盘内容还在，`data/app.db` 可能被悄悄清空，之前存的所有项目/
-分析结果会丢失且找不回来。如果确实想用这类平台，必须自己额外解决"数据库放在真正
-持久化的地方"这个问题（比如换成外部数据库服务），这已经超出这个工具目前的设计范围。
+Backups are **built in and automatic** for both options:
 
-## 数据备份
+- On every new database connection the app checks whether a backup is due — at most one every
+  6 hours. Backups go to `data/backups/` with timestamped names; the newest 30 are kept.
+- The home page has a "Data backup" panel showing how many backups exist and when the latest
+  was made, plus a "Back up now" button.
+- Backups use SQLite's online backup API (not a file copy), so they are consistent and
+  openable even while the database is in use.
 
-不管选方案 A 还是方案 B，**本地备份都是内置、自动开启的，不需要额外配置**：
+**Important**: `data/backups/` lives on the same disk as `data/app.db`. It protects against
+a corrupted or deleted database file, **not** against losing the whole disk/machine. Sync
+`data/backups/` to cloud storage or an external drive yourself — the tool does not do this.
 
-- 每次打开这个 app（更准确说，每次真正建立一次新的数据库连接）都会检查一次要不要
-  备份，默认最多每 6 小时真正备份一次（避免打开关闭很频繁的时候把硬盘写爆），备份
-  文件存在 `data/backups/` 目录，文件名带时间戳，自动保留最近 30 份、更早的自动清理。
-- 首页有个"数据备份"折叠框，能看到现有多少份备份、最近一份是什么时候，也有一个
-  "立即备份"按钮，不想等自动节流的话随时手动点。
-- 备份用的是 SQLite 官方的在线备份 API（不是简单复制文件），就算数据库正在被读写
-  也能备份出一份完整、能正常打开的文件，不会因为"备份的时候数据库正好在用"而出问题。
+## Reporting problems
 
-**重要提醒**：`data/backups/` 里的备份文件和正式数据库 `data/app.db` 在同一块硬盘
-上——这解决的是"数据库文件本身被误删/写坏"这类问题，**解决不了"整块硬盘/整台服务器
-没了"这种情况**。如果这台机器上的数据对你很重要（大概率是），建议自己养成习惯，
-定期把 `data/backups/` 整个目录再同步一份到云盘、移动硬盘、或者任何不在这台机器上
-的地方——这一步这个工具目前没有自动做，需要你自己安排。
+You don't need to learn GitHub: describe the problem to the AI coding tool you use with this
+repo (Claude Code, Codex, … anything that can run terminal commands) and ask it to file an
+Issue. Something like:
 
-## 用起来遇到问题，怎么反馈
+> I hit a problem using this survey analysis tool: [what you clicked, what you expected,
+> what happened, and the exact error text]. Please create a GitHub issue in
+> `https://github.com/JuranWang/QueryStats-Tool` (use `gh issue create`, short title, clear
+> reproduction steps in the body). If you lack permission or aren't logged in to GitHub, tell
+> me what to do.
 
-不用自己去研究怎么用 GitHub——跟你自己拉这份代码用的那个 AI 编程工具（Claude
-Code、Codex 等，随便哪个能跑终端命令的都行）描述你遇到的情况，让它帮你在这个仓库
-里提交一个 Issue，作者会看到。
+The repo is public, so anyone can open an Issue (a GitHub account is needed). Issues are for
+tracking — the maintainer checks them periodically; this is not a real-time support channel.
+If your AI tool has no `gh` CLI, have it write the report and paste it into the GitHub website.
 
-跟 AI 说类似这样的话就行（把方括号里的内容换成你自己的情况）：
+## Known limitations
 
-> 我在用这个问卷分析工具时遇到了问题：[具体描述现象，比如点了哪个按钮、预期
-> 应该发生什么、实际发生了什么，最好带上报错信息的原文]。请帮我在
-> `https://github.com/JuranWang/QueryStats-Tool` 这个仓库里创建一个 GitHub
-> issue 记录这个问题（用 `gh issue create` 命令，标题简短概括问题，正文里写清楚
-> 复现步骤）。如果你发现自己没有权限提交，或者没有登录 GitHub，告诉我具体要
-> 怎么操作。
-
-几点提前说明：
-
-- 这是私有仓库，只有作者邀请过的人才能提交 Issue——第一次反馈之前，先把你的
-  GitHub 用户名告诉作者，等对方把你加成协作者。
-- 这个仓库的 Issues 只是用来记录问题、方便追踪，作者会定期看，但不是"提了就
-  秒回"的实时客服渠道，紧急的问题该用什么方式联系还是走什么方式联系。
-- 如果你的 AI 工具本身没配 `gh` 命令行工具或者没登录 GitHub，让它把整理好的
-  问题描述直接输出给你，你手动复制到 GitHub 网页上提交也一样。
-
-## 已知限制
-
-- 单机 SQLite，没有做多用户并发写入的压力测试——按"一个人自己用，或者小团队里
-  大家在各自本地各跑一份"的前提设计，不建议直接拿去支撑很多人同时高频写入同一个
-  数据库文件的场景。
-- 从历史记录里加载的多选题，如果当初存的时候是这次改动（2026-09）之前的旧格式，
-  "调整分组键"不会有实际效果（旧格式没保留原始拆分列）；这次改动之后新存的分析
-  不受此限制。
+- Single-machine SQLite; multi-user concurrent writes to one database file have not been
+  stress-tested. It is designed for "one person, or several people each running their own copy".
+- Multi-select questions loaded from history saved **before 2026-09** lose their original
+  split columns, so "adjust group key" has no effect on them; analyses saved afterwards are fine.
+- Some values in the data-mapping editor (section names like 正式/筛选/基础信息/平台信息) are
+  stored as Chinese identifiers and are shown as-is in both languages.
+- AI prompts stay in Chinese; the language of AI output follows the project's target language,
+  not the UI language.

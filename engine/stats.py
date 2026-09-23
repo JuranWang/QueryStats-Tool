@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from engine.i18n import t
+
 from collections import Counter
 from typing import Any, Iterable
 
@@ -18,7 +20,7 @@ def format_pct(count: int, total: int) -> str:
 def format_count_pct(count: int, total: int) -> str:
     """Format evidence as a concrete respondent count and percentage."""
 
-    return f"{count}人（{format_pct(count, total)}）"
+    return t('{count}人（{percentage}）', count=count, percentage=format_pct(count, total))
 
 
 def _ordered_observed_values(values: Iterable[Any], order: list[str] | None) -> list[Any]:
@@ -69,6 +71,35 @@ def multi_choice_stats(
     if order is None:
         options.sort(key=lambda value: -counts[value])
     return _stats_rows(counts, options, len(list_series))
+
+
+def ranking_option_stats(
+    df: pd.DataFrame, option_col: str, max_rank: int
+) -> list[dict]:
+    """Return every rank in order, using this option's non-null count as the base."""
+
+    values = df[option_col].dropna()
+    counts = Counter(pd.to_numeric(values, errors="coerce").tolist())
+    return _stats_rows(counts, list(range(1, max_rank + 1)), len(values))
+
+
+def ranking_table(
+    df: pd.DataFrame,
+    option_cols: list[str],
+    option_labels: dict[str, str],
+    max_rank: int,
+) -> pd.DataFrame:
+    """Build a rank-by-option table with the same per-option bases as the charts."""
+
+    columns = [
+        [row["count_pct_label"] for row in ranking_option_stats(df, col, max_rank)]
+        for col in option_cols
+    ]
+    return pd.DataFrame(
+        columns,
+        index=[option_labels.get(col, col) for col in option_cols],
+        columns=[t("第{rank}名", rank=i) for i in range(1, max_rank + 1)],
+    ).T
 
 
 def numeric_stats(series: pd.Series) -> dict:
@@ -142,7 +173,7 @@ def crosstab_counts(
             format_count_pct(int(count), group_total) for count in raw[group]
         ]
 
-    total_name = "三组合计" if len(groups) == 3 else "合计"
+    total_name = t('三组合计') if len(groups) == 3 else t('合计')
     overall_total = sum(_group_total(group) for group in groups)
     formatted[total_name] = [
         format_count_pct(int(count), overall_total) for count in raw.sum(axis=1)

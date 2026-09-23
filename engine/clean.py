@@ -270,6 +270,46 @@ def detect_multi_select_groups(df: pd.DataFrame) -> tuple[dict[str, list[str]], 
     return groups, summary_columns
 
 
+def _looks_like_ranking_group(df: pd.DataFrame, option_columns: list[str]) -> bool:
+    """Require integer ranks and complete permutations in at least 90% of answered rows."""
+
+    max_rank = len(option_columns)
+    if max_rank < 2:
+        return False
+    numeric = pd.DataFrame(index=df.index)
+    for column in option_columns:
+        values = df[column].dropna()
+        ranks = pd.to_numeric(values, errors="coerce")
+        if ranks.isna().any() or not (
+            ranks.between(1, max_rank) & ranks.mod(1).eq(0)
+        ).all():
+            return False
+        numeric[column] = pd.to_numeric(df[column], errors="coerce")
+
+    answered = numeric.loc[numeric.notna().any(axis=1)]
+    if answered.empty:
+        return False
+    expected = set(range(1, max_rank + 1))
+    complete = answered.apply(lambda row: set(row.dropna()) == expected, axis=1)
+    return bool(complete.mean() >= 0.9)
+
+
+def detect_ranking_groups(df: pd.DataFrame) -> dict[str, list[str]]:
+    """Group sibling option columns whose values form respondent-level rankings."""
+
+    prefix_to_columns: dict[str, list[str]] = {}
+    for column in df.columns:
+        prefix = _multi_group_prefix(column)
+        if prefix:
+            prefix_to_columns.setdefault(prefix, []).append(column)
+
+    return {
+        prefix: option_columns
+        for prefix, option_columns in prefix_to_columns.items()
+        if _looks_like_ranking_group(df, option_columns)
+    }
+
+
 def merge_multi_select_columns(
     df: pd.DataFrame,
     option_cols: list[str],

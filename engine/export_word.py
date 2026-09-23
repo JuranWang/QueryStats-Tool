@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from engine.i18n import t
+
 import math
 import tempfile
 import textwrap
@@ -29,6 +31,7 @@ from engine.chart_spec import OPTION_COLOR_PALETTE, TITLE_COLOR, choose_chart_ty
 QUESTION_TYPE_ZH = {
     "single": "单选题",
     "multi": "多选题",
+    "ranking": "排序题",
     "open": "开放题",
     "numeric": "数值题",
 }
@@ -254,7 +257,7 @@ def _render_chart_image(
             )
             pie_axis.axis("equal")
         else:
-            pie_axis.text(0.5, 0.5, "暂无数据", ha="center", va="center")
+            pie_axis.text(0.5, 0.5, t('暂无数据'), ha="center", va="center")
             pie_axis.axis("off")
 
         # 之前的写法：y 轴的数据坐标直接用"英寸"做单位，但 set_ylim 的上限用的是
@@ -328,7 +331,7 @@ def _render_chart_image(
         bars = axis.barh(positions, counts, color=colors, height=0.62)
         axis.set_yticks(positions, labels=options)
         axis.invert_yaxis()
-        axis.set_xlabel("人数")
+        axis.set_xlabel(t('人数'))
         axis.grid(False)
         axis.spines[["top", "right", "left"]].set_visible(False)
         axis.tick_params(axis="y", length=0)
@@ -400,17 +403,17 @@ def _add_bullet(document: Document, text: str) -> None:
 
 
 def _test_method_rows(test_method: dict) -> list[list[str]]:
-    platform = test_method.get("platform_source") or "未填写"
+    platform = test_method.get("platform_source") or t('未填写')
     if test_method.get("is_branched"):
         count = test_method.get("branch_count")
-        branched = f"是（{count}份）" if count is not None else "是（份数未填写）"
+        branched = t('是（{count}份）', count=count) if count is not None else t('是（份数未填写）')
     else:
-        branched = "否"
+        branched = t('否')
     return [
-        ["平台来源", platform],
-        ["是否分流", branched],
-        ["筛选剔除规则", test_method.get("screen_out_rule") or "未填写"],
-        ["跳转逻辑说明", test_method.get("skip_logic_note") or "未填写"],
+        [t('平台来源'), platform],
+        [t('是否分流'), branched],
+        [t('筛选剔除规则'), test_method.get("screen_out_rule") or t('未填写')],
+        [t('跳转逻辑说明'), test_method.get("skip_logic_note") or t('未填写')],
     ]
 
 
@@ -444,16 +447,16 @@ def export_analysis_to_docx(
 
     document = Document()
     _configure_document_styles(document)
-    document.add_heading(f"{project_name} 问卷分析报告", level=1)
+    document.add_heading(t('{project_name} 问卷分析报告', project_name=project_name), level=1)
 
     nonempty_conclusions = [text for text in conclusions if text]
     if nonempty_conclusions:
-        document.add_heading("核心结论", level=2)
+        document.add_heading(t('核心结论'), level=2)
         for conclusion in nonempty_conclusions:
             _add_bullet(document, conclusion)
 
-    document.add_heading("测试方法", level=2)
-    _add_table(document, ["项目", "说明"], _test_method_rows(test_method))
+    document.add_heading(t('测试方法'), level=2)
+    _add_table(document, [t('项目'), t('说明')], _test_method_rows(test_method))
 
     with tempfile.TemporaryDirectory(prefix="survey_word_charts_") as temp_dir:
         for unit in units:
@@ -463,7 +466,7 @@ def export_analysis_to_docx(
             display_no = unit["display_no"]
             title = unit["title"]
             document.add_heading(
-                f"{display_no}. {title}【{QUESTION_TYPE_ZH[kind]}】", level=3
+                t('{display_no}. {title}【{question_type}】', display_no=display_no, title=title, question_type=t(QUESTION_TYPE_ZH[kind])), level=3
             )
             stats_result = stats_by_unit[display_no]
 
@@ -477,10 +480,19 @@ def export_analysis_to_docx(
                 sample_run = sample_paragraph.add_run(f"n = {n_by_unit[display_no]}")
                 sample_run.font.size = Pt(9)
                 sample_run.font.color.rgb = RGBColor(64, 64, 64)
+            elif kind == "ranking":
+                dataframe = stats_result["table"]
+                index_header = dataframe.index.name or ""
+                headers = [str(index_header), *[str(column) for column in dataframe.columns]]
+                rows = [
+                    [index_value, *row.tolist()]
+                    for index_value, row in dataframe.iterrows()
+                ]
+                _add_table(document, headers, rows)
             elif kind == "numeric":
                 _add_table(
                     document,
-                    ["项目", "N", "均值", "中位数", "最小", "最大"],
+                    [t('项目'), "N", t('均值'), t('中位数'), t('最小'), t('最大')],
                     [[
                         title,
                         stats_result.get("n"),
@@ -498,7 +510,7 @@ def export_analysis_to_docx(
                     bool(row.get("corresponding_choice")) for row in stats_result
                 )
                 if has_choices:
-                    headers = ["对应选择", "原文", "中文翻译"]
+                    headers = [t('对应选择'), t('原文'), t('中文翻译')]
                     rows = [
                         [
                             row.get("corresponding_choice"),
@@ -508,7 +520,7 @@ def export_analysis_to_docx(
                         for row in stats_result
                     ]
                 else:
-                    headers = ["原文", "中文翻译"]
+                    headers = [t('原文'), t('中文翻译')]
                     rows = [
                         [row.get("raw"), row.get("translation")]
                         for row in stats_result
@@ -516,7 +528,7 @@ def export_analysis_to_docx(
                 _add_table(document, headers, rows)
 
         if crosstabs:
-            document.add_heading("交叉分析", level=2)
+            document.add_heading(t('交叉分析'), level=2)
             for item in crosstabs:
                 document.add_heading(item["title"], level=3)
                 dataframe = item["table"]
@@ -530,7 +542,7 @@ def export_analysis_to_docx(
 
         nonempty_insights = [text for text in (ai_insights or []) if text]
         if nonempty_insights:
-            document.add_heading("AI 洞察", level=2)
+            document.add_heading(t('AI 洞察'), level=2)
             for insight in nonempty_insights:
                 _add_bullet(document, insight)
 

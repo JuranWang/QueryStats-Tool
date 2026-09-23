@@ -6,8 +6,41 @@ from engine.stats import (
     format_pct,
     multi_choice_stats,
     numeric_stats,
+    ranking_option_stats,
+    ranking_table,
     single_choice_stats,
 )
+
+
+def test_ranking_stats_and_table_use_each_options_non_null_base():
+    df = pd.DataFrame({
+        "__TEST__A": ["1", "1", "2", None],
+        "__TEST__B": [2, None, 1, None],
+    })
+    result = ranking_option_stats(df, "__TEST__A", 3)
+    assert result == [
+        {"option": "1", "n": 2, "pct": 66.7, "count_pct_label": format_count_pct(2, 3)},
+        {"option": "2", "n": 1, "pct": 33.3, "count_pct_label": format_count_pct(1, 3)},
+        {"option": "3", "n": 0, "pct": 0.0, "count_pct_label": format_count_pct(0, 3)},
+    ]
+    table = ranking_table(df, list(df.columns), {"__TEST__A": "硅基", "__TEST__B": "铂金硅"}, 3)
+    assert table.index.tolist() == ["第1名", "第2名", "第3名"]
+    assert table.columns.tolist() == ["硅基", "铂金硅"]
+    assert table["硅基"].tolist() == [row["count_pct_label"] for row in result]
+    assert table["铂金硅"].tolist() == [format_count_pct(1, 2), format_count_pct(1, 2), format_count_pct(0, 2)]
+
+
+def test_ranking_empty_option_and_english_rank_labels():
+    from engine.i18n import set_lang
+
+    df = pd.DataFrame({"__TEST__A": [None, None]})
+    result = ranking_option_stats(df, "__TEST__A", 2)
+    assert [row["n"] for row in result] == [0, 0]
+    assert [row["pct"] for row in result] == [0.0, 0.0]
+    set_lang("en")
+    table = ranking_table(df, list(df.columns), {"__TEST__A": "Silicon"}, 2)
+    assert table.index.tolist() == ["Rank 1", "Rank 2"]
+    assert table.iloc[:, 0].tolist() == [format_count_pct(0, 0)] * 2
 
 
 def test_format_count_pct_uses_one_decimal_place():

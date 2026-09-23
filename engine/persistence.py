@@ -39,11 +39,11 @@ DB_TO_SECTION = {value: key for key, value in SECTION_TO_DB.items()}
 
 
 def _translated_options(unit: dict, df_all, translation_cache: dict) -> dict:
-    if unit["kind"] not in {"single", "multi"}:
+    if unit["kind"] not in {"single", "multi", "ranking"}:
         return {}
 
     translated: dict = {}
-    if unit["kind"] == "multi":
+    if unit["kind"] in {"multi", "ranking"}:
         option_labels = option_labels_for_group(unit["columns"])
         for label in dict.fromkeys(option_labels.values()):
             translation = translation_cache.get(label)
@@ -68,6 +68,7 @@ def _write_questions_and_responses(
     df_all,
     screen_fail_values: dict,
     translation_cache: dict,
+    original_columns: dict | None = None,
 ) -> None:
     """写一份问卷的全部 questions/responses——save_analysis（新建）和 update_analysis
     （手动保存覆盖已有的一份）共用同一套写入逻辑，唯一的区别是调用前要不要先清空旧数据。
@@ -77,10 +78,14 @@ def _write_questions_and_responses(
     for order_index, unit in enumerate(units):
         kind = unit["kind"]
         columns = unit["columns"]
-        meta: dict = {}
-        if kind == "multi":
-            meta["columns"] = columns
-        elif screen_fail_values.get(columns[0]):
+        # Keep original column names for mapping memory; load_analysis retains its
+        # existing single-column/display-number behavior.
+        meta: dict = {"columns": columns}
+        if kind not in {"multi", "ranking"} and columns == [unit["display_no"]] and original_columns:
+            # Historical loading exposes display numbers as data columns. Keep
+            # the previously saved source names when that analysis is resaved.
+            meta["columns"] = original_columns.get(unit["display_no"], columns)
+        if kind not in {"multi", "ranking"} and screen_fail_values.get(columns[0]):
             meta["fail_values"] = screen_fail_values[columns[0]]
 
         if unit["title"] in translation_cache:
@@ -108,6 +113,15 @@ def _write_questions_and_responses(
             raw_series = df_all[columns].apply(
                 lambda row: json.dumps(
                     {col: _is_truthy(row[col]) for col in columns}, ensure_ascii=False
+                ),
+                axis=1,
+            )
+        elif kind == "ranking":
+            # Preserve every option's rank and missing values for later regrouping.
+            raw_series = df_all[columns].apply(
+                lambda row: json.dumps(
+                    {col: None if pd.isna(row[col]) else str(row[col]) for col in columns},
+                    ensure_ascii=False,
                 ),
                 axis=1,
             )
@@ -183,9 +197,16 @@ def update_analysis(
     掉旧的，而不是留着上一次保存的内容不清。
     """
 
+    original_columns = {
+        row["q_no"]: json.loads(row["meta_json"]).get("columns", [row["source_text_en"] or row["q_no"]])
+        for row in conn.execute(
+            "SELECT q_no, source_text_en, meta_json FROM questions WHERE document_id = ? AND q_type != 'multi'",
+            (document_id,),
+        )
+    }
     delete_questions_for_document(conn, document_id)
     _write_questions_and_responses(
-        conn, document_id, units, df_all, screen_fail_values, translation_cache
+        conn, document_id, units, df_all, screen_fail_values, translation_cache, original_columns
     )
     if title is not None:
         rename_document(conn, document_id, title)
@@ -195,6 +216,42 @@ def update_analysis(
     touch_document(conn, document_id)
     touch_project(conn, project_id)
     delete_autosave(conn, document_id)
+
+
+def save_ai_results(conn: sqlite3.Connection, document_id: int, ai_results: dict) -> None:
+    """只把 AI 分类结果写进这份文档已有的"正式"extras，图片/排版这些其它内容原样保留。
+
+    真实反馈"AI 开放题分析结果下次打开就没了"——原来 AI 结果只会跟着"手动保存"或者 20 秒
+    一次的自动保存草稿走，而重新打开一份分析读的是正式数据、不读草稿，所以两次保存之间
+    跑的 AI 分类，关掉页面就丢了。这里让 AI 分类一跑完就单独落库，不等手动保存。
+    ai_results 的形状同 extras["ai_results"]：{题号: {筛选条件("" 代表没筛选): 结果}}，
+    是"当前全部结果"的整份覆盖（重新生成/清除之后不再有的那份，也会跟着从库里消失）。
+    """
+
+    extras = read_document_extras(conn, document_id) or {}
+    extras["ai_results"] = ai_results
+    write_document_extras(conn, document_id, extras)
+    touch_document(conn, document_id)
+
+
+def save_images(conn: sqlite3.Connection, document_id: int, q_no: str, images_payload: list[dict]) -> None:
+    """只把一道题的图片写进这份文档已有的"正式"extras，其它题目/AI 结果/排版原样保留。
+
+    真实反馈"插入图片后下次打开还要重新上传"——原来图片只会跟着"手动保存"或者 20 秒
+    一次的自动保存草稿走，而重新打开一份分析读的是正式数据、不读草稿，所以两次保存之间
+    插入的图片，关掉页面就丢了。这里让图片一改完就单独落库，不等手动保存。
+    images_payload 的形状同 extras["images"][q_no]：图片字典的列表（字节用 bytes_b64），
+    只覆盖当前题目；空列表表示已经清空，从 extras["images"] 里删除这道题。
+    """
+
+    extras = read_document_extras(conn, document_id) or {}
+    images = extras.setdefault("images", {})
+    if images_payload:
+        images[q_no] = images_payload
+    else:
+        images.pop(q_no, None)
+    write_document_extras(conn, document_id, extras)
+    touch_document(conn, document_id)
 
 
 def _load_question_values(conn: sqlite3.Connection, question: sqlite3.Row) -> list:
@@ -315,6 +372,17 @@ def load_analysis(conn: sqlite3.Connection, document_id: int) -> dict:
         if question["q_type"] == "multi":
             multi_columns, unit_columns = _load_multi_question(conn, question, meta)
             columns.update(multi_columns)
+        elif question["q_type"] == "ranking":
+            unit_columns = meta["columns"]
+            rows = conn.execute(
+                "SELECT raw_value FROM responses WHERE question_id = ? ORDER BY order_index ASC",
+                (question["id"],),
+            ).fetchall()
+            ranks = [json.loads(row["raw_value"]) for row in rows]
+            columns.update({
+                col: pd.Series([row.get(col) for row in ranks])
+                for col in unit_columns
+            })
         else:
             columns[q_no] = pd.Series(_load_question_values(conn, question))
             unit_columns = [q_no]

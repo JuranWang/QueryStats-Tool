@@ -84,6 +84,7 @@ EXPECTED_COLUMNS = {
     "conclusions": ["id", "project_id", "text", "order_index"],
     "autosaves": ["document_id", "payload_json", "saved_at"],
     "document_extras": ["document_id", "payload_json", "updated_at"],
+    "mapping_templates": ["id", "name", "created_at", "rows_json"],
 }
 
 
@@ -292,6 +293,104 @@ def test_migration_backfills_origin_for_old_databases(tmp_path):
     assert rows["未命名项目"] == "auto"
     assert rows["客户委托的品牌调研"] == "manual"
     conn.close()
+
+
+def test_migration_allows_ranking_question_type_without_breaking_existing_data(tmp_path):
+    """模拟"改动之前"的老数据库：手写一张只认 single/multi/open/numeric 的 questions
+    表，塞一些真实数据（带外键指向它的 responses 行），再用现在的 init_db 打开——
+    新的 q_type='ranking' 要能存进去，旧数据（id、内容、外键关系）要原样保留，
+    外键约束本身也不能被这次"整表重建"式的迁移搞坏（真机测的时候真的复现过一次
+    SQLite 的坑：ALTER TABLE RENAME 默认会把 responses 表里的外键定义也跟着悄悄
+    改指向重命名后的占位表，占位表删掉后外键就指向一个不存在的表——这条测试断言
+    外键在迁移后依然正常拒绝一条指向不存在题目的记录，同时依然放行合法记录）。
+    """
+
+    db_path = str(tmp_path / "legacy_questions.sqlite")
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.execute("PRAGMA foreign_keys = ON")
+    legacy_conn.execute(
+        """
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            format TEXT NOT NULL
+        )
+        """
+    )
+    legacy_conn.execute(
+        """
+        CREATE TABLE questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL REFERENCES documents(id),
+            q_no TEXT NOT NULL,
+            q_type TEXT NOT NULL CHECK (q_type IN ('single','multi','open','numeric')),
+            source_text_en TEXT,
+            order_index INTEGER NOT NULL,
+            section TEXT NOT NULL DEFAULT 'official'
+                CHECK (section IN ('screen_out','official','background','platform_auto')),
+            meta_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    legacy_conn.execute(
+        """
+        CREATE TABLE responses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question_id INTEGER NOT NULL REFERENCES questions(id),
+            respondent_id TEXT NOT NULL,
+            raw_value TEXT,
+            translation TEXT,
+            order_index INTEGER
+        )
+        """
+    )
+    legacy_conn.execute("INSERT INTO documents (id, project_id, filename, format) VALUES (1, 1, 'f.csv', 'csv')")
+    legacy_conn.execute(
+        "INSERT INTO questions (id, document_id, q_no, q_type, order_index) VALUES (7, 1, 'Q1', 'single', 0)"
+    )
+    legacy_conn.execute(
+        "INSERT INTO responses (question_id, respondent_id, raw_value) VALUES (7, 'r1', 'A')"
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    conn = init_db(db_path)
+
+    # 旧数据原样保留，id 也没变（responses 的外键还指着 id=7 这道题）。init_db 用
+    # sqlite3.Row 做 row_factory，Row 不支持直接跟普通 tuple 比 == ，先转一下。
+    assert [tuple(r) for r in conn.execute("SELECT id, q_type FROM questions")] == [(7, "single")]
+    assert [tuple(r) for r in conn.execute("SELECT question_id, raw_value FROM responses")] == [(7, "A")]
+
+    # 新约束真的放宽了——'ranking' 现在能存进去。
+    conn.execute(
+        "INSERT INTO questions (document_id, q_no, q_type, order_index) VALUES (1, 'Q2', 'ranking', 1)"
+    )
+    assert conn.execute("SELECT q_type FROM questions WHERE q_no = 'Q2'").fetchone()[0] == "ranking"
+
+    # 无效题型依然被拒绝——CHECK 约束没有被误放宽成"什么都能存"。
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO questions (document_id, q_no, q_type, order_index) VALUES (1, 'Q3', 'bogus', 2)"
+        )
+
+    # 外键约束依然正常工作——这条锁住那次真机复现过的坑（RENAME 悄悄改写了 responses
+    # 的外键定义，指向一个之后会被删掉的占位表，导致外键校验直接报"no such table"）。
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO responses (question_id, respondent_id, raw_value) VALUES (999999, 'r2', 'B')"
+        )
+    conn.execute("INSERT INTO responses (question_id, respondent_id, raw_value) VALUES (7, 'r3', 'C')")
+
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    conn.commit()
+
+    # 再打开一次（模拟服务重启）——迁移是幂等的，不会重复执行、不会再报错。
+    conn.close()
+    conn2 = init_db(db_path)
+    assert conn2.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 2
+    conn2.close()
 
 
 def test_conclusion_crud_orders_updates_and_deletes(tmp_path):

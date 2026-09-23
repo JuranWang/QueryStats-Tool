@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from engine.i18n import t
+
 import json
 import os
 import sqlite3
@@ -139,7 +141,7 @@ def _custom_provider_placeholder_factory(**_kwargs):
     """
 
     raise RuntimeError(
-        "custom 供应商必须通过 get_provider() 构造（需要额外传 base_url），不能直接从注册表实例化"
+        t('custom 供应商必须通过 get_provider() 构造（需要额外传 base_url），不能直接从注册表实例化')
     )
 
 
@@ -329,7 +331,7 @@ def get_provider(conn: sqlite3.Connection, purpose: str = "general") -> LLMProvi
             model_key = f"llm_model::{purpose}"
 
     if name not in PROVIDER_REGISTRY or name not in PROVIDER_API_KEY_ENV:
-        raise ValueError(f"未知的 LLM 供应商: {name}")
+        raise ValueError(t('未知的 LLM 供应商: {name}', name=name))
 
     model = db.get_setting(conn, model_key, default=PROVIDER_DEFAULT_MODEL.get(name, ""))
 
@@ -339,8 +341,7 @@ def get_provider(conn: sqlite3.Connection, purpose: str = "general") -> LLMProvi
     )
     if not api_key:
         raise RuntimeError(
-            f"缺少 {name} 的 API key：请在设置里填写，或设置环境变量 {env_name}"
-            f"（缺少环境变量 {env_name}）"
+            t('缺少 {name} 的 API key：请在设置里填写，或设置环境变量 {env_name}（缺少环境变量 {env_name}）', name=name, env_name=env_name)
         )
 
     if name == "custom":
@@ -354,10 +355,10 @@ def get_provider(conn: sqlite3.Connection, purpose: str = "general") -> LLMProvi
         )
         if not base_url:
             raise RuntimeError(
-                "选用了「自定义 API」但没有填 base_url：请在设置里填写，或设置环境变量 CUSTOM_BASE_URL"
+                t('选用了「自定义 API」但没有填 base_url：请在设置里填写，或设置环境变量 CUSTOM_BASE_URL')
             )
         if not model:
-            raise RuntimeError("选用了「自定义 API」但没有填模型名：请在设置里填写")
+            raise RuntimeError(t('选用了「自定义 API」但没有填模型名：请在设置里填写'))
         return OpenAICompatibleProvider(api_key=api_key, model=model, base_url=base_url)
 
     return PROVIDER_REGISTRY[name](api_key=api_key, model=model)

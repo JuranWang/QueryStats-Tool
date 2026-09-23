@@ -13,15 +13,29 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 import streamlit as st
 
-st.set_page_config(page_title="问卷可视化分析工具", layout="wide", initial_sidebar_state="expanded")
+from engine import db
+from engine.i18n import t
+from app_streamlit.lang_ui import init_language, render_language_switch
+
+_conn = st.session_state.get("db_conn") or db.init_db(str(PROJECT_ROOT / "data" / "app.db"))
+st.session_state["db_conn"] = _conn
+init_language(_conn)
+
+st.set_page_config(page_title=t("问卷可视化分析工具"), layout="wide", initial_sidebar_state="expanded")
+render_language_switch(_conn)
 
 pages = [
-    st.Page("views/home_view.py", title="首页", default=True),
-    st.Page("views/project_view.py", title="项目工作区"),
-    st.Page("app.py", title="问卷分析"),
-    st.Page("views/dragdrop_test.py", title="拖拽排版试验"),
+    st.Page("views/home_view.py", title=t("首页"), default=True),
+    st.Page("views/project_view.py", title=t("项目工作区")),
+    st.Page("app.py", title=t("问卷分析")),
 ]
 # position="hidden"——所有页面切换这个 app 里都是用 st.switch_page 显式按钮做的
 # （"打开项目"/"新建分析"/"返回首页" 这些），不依赖 Streamlit 自带的侧边栏页面切换器；

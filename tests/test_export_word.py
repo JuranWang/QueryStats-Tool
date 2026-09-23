@@ -217,3 +217,21 @@ def test_crosstab_dimensions_match_dataframe(tmp_path):
     table = _table_with_header(document, ["选项", "男", "合计"])
     assert len(table.rows) == len(dataframe) + 1
     assert len(table.columns) == len(dataframe.columns) + 1
+
+
+def test_ranking_exports_question_heading_and_summary_table(tmp_path):
+    from engine.stats import ranking_table
+
+    df = pd.DataFrame({"__TEST__A": ["1", "2", None], "__TEST__B": ["2", "1", "1"]})
+    summary = ranking_table(df, list(df.columns), {"__TEST__A": "硅基", "__TEST__B": "铂金硅"}, 2)
+    unit = {"kind": "ranking", "section": "正式", "title": "__TEST__材料排序", "display_no": "Q1"}
+    document = _export(
+        tmp_path, project_name="__TEST__ranking", units=[unit],
+        stats_by_unit={"Q1": {"table": summary}}, n_by_unit={"Q1": len(df)},
+    )
+    assert any("__TEST__材料排序【排序题】" in text for text in _paragraph_texts(document))
+    table = _table_with_header(document, ["", "硅基", "铂金硅"])
+    assert [[cell.text for cell in row.cells] for row in table.rows[1:]] == [
+        [rank, *values.tolist()] for rank, values in summary.iterrows()
+    ]
+    assert len(document.inline_shapes) == 0

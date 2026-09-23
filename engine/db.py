@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS questions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id INTEGER NOT NULL REFERENCES documents(id),
     q_no TEXT NOT NULL,
-    q_type TEXT NOT NULL CHECK (q_type IN ('single','multi','open','numeric')),
+    q_type TEXT NOT NULL CHECK (q_type IN ('single','multi','open','numeric','ranking')),
     source_text_en TEXT,
     order_index INTEGER NOT NULL,
     section TEXT NOT NULL DEFAULT 'official'
@@ -134,6 +134,15 @@ CREATE TABLE IF NOT EXISTS document_extras (
 );
 """
 
+SCHEMA += """
+CREATE TABLE IF NOT EXISTS mapping_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    rows_json TEXT NOT NULL
+);
+"""
+
 
 def init_db(db_path: str) -> sqlite3.Connection:
     """Open a database, enforce foreign keys, and idempotently create its schema.
@@ -151,6 +160,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     _migrate_add_missing_columns(conn)
+    _migrate_questions_allow_ranking_type(conn)
     conn.commit()
 
     # 每次真正建立数据库连接（大致是"每次开一个新的浏览器 session"）都顺手检查一下
@@ -244,6 +254,80 @@ def _migrate_add_missing_columns(conn: sqlite3.Connection) -> None:
             # 改动之前 app.py 自动建的占位项目（旧代码把这个名字写死了）——回填成
             # origin='auto'，首页的自动/手动筛选对老数据也立刻生效，不用手动一个个标记。
             conn.execute("UPDATE projects SET origin = 'auto' WHERE name = '未命名项目'")
+
+
+def _migrate_questions_allow_ranking_type(conn: sqlite3.Connection) -> None:
+    """给已经存在的旧数据库把 `questions.q_type` 的 CHECK 约束从
+    ('single','multi','open','numeric') 放宽到多一个 'ranking'（排序题）。
+
+    这跟 `_migrate_add_missing_columns` 那种"补列"不一样——CHECK 约束是 CREATE TABLE
+    语句本身的一部分，存在 `sqlite_master` 里，SQLite 没有"ALTER TABLE ... 改 CHECK
+    约束"这种命令（`ALTER TABLE ADD COLUMN` 有，改约束没有），唯一的办法是整个表
+    重建：改名占位 → 用新约束重新建一张同名表 → 把数据原样搬过去（连 id 一起，
+    不能用自动生成的新 id，不然 responses/categories/ai_runs 这些外键就全对不上了）→
+    删掉占位表。
+
+    真的测过 SQLite 在这种"手动指定 id 搬数据"的场景下会不会把 AUTOINCREMENT 计数器
+    搞乱——不会：只要搬过去的 INSERT 语句带着显式 id，SQLite 自己会把 AUTOINCREMENT
+    的内部计数跟着更新到"目前见过的最大 id"，后面正常插入（不指定 id）的新记录
+    还是会接着从最大 id 往后编号，不会跟老数据的 id 撞车。
+
+    外键要先关掉再做这一套改名/重建——`responses.question_id REFERENCES questions(id)`
+    这种外键在原表被改名的瞬间会找不到目标表，不关掉外键检查会直接报错。`PRAGMA
+    foreign_keys` 这个开关在一个事务内部改是不生效的（SQLite 的已知行为，改之前
+    专门写小脚本验证过），所以最后重新打开外键检查那一句必须放在 `with conn:` 这个
+    事务块结束、自动提交了之后再单独执行一次，不能塞在块里面。
+
+    真机测出来的一个坑：SQLite 默认的 `ALTER TABLE RENAME` 是"智能"模式——把
+    `questions` 改名成占位表的那一刻，会顺手把 `responses`/`categories`/`ai_runs`
+    这些表里 `REFERENCES questions(id)` 的外键定义也跟着悄悄改写成
+    `REFERENCES questions_pre_ranking_migration(id)`，等占位表最后被删掉，这些外键
+    就指向一个不存在的表——外键检查会报"no such table"，哪怕这几张表本身一行都没动过。
+    这是本机真实验证出来的（不是猜的）：迁移完之后往 responses 插入一条脏数据触发
+    外键校验，报的错正是"no such table: main.questions_pre_ranking_migration"。
+    解法是迁移这几步期间把 `PRAGMA legacy_alter_table` 打开——关掉这种"智能改写"，
+    让 RENAME 只改 `questions` 自己的名字，不去动其它表里的外键定义（反正新表很快
+    就会用回 `questions` 这个名字，其它表的 `REFERENCES questions(id)` 本来就不需要
+    跟着变）。
+    """
+
+    current_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'questions'"
+    ).fetchone()
+    if current_sql is None or "ranking" in current_sql[0]:
+        # 全新数据库（还没建表，交给上面 SCHEMA 里 CREATE TABLE IF NOT EXISTS 用新
+        # 约束建）或者已经迁移过一次的旧数据库，都不用再做一遍。
+        return
+
+    with conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("PRAGMA legacy_alter_table = ON")
+        conn.execute("ALTER TABLE questions RENAME TO questions_pre_ranking_migration")
+        conn.execute(
+            """
+            CREATE TABLE questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL REFERENCES documents(id),
+                q_no TEXT NOT NULL,
+                q_type TEXT NOT NULL CHECK (q_type IN ('single','multi','open','numeric','ranking')),
+                source_text_en TEXT,
+                order_index INTEGER NOT NULL,
+                section TEXT NOT NULL DEFAULT 'official'
+                    CHECK (section IN ('screen_out','official','background','platform_auto')),
+                meta_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO questions (id, document_id, q_no, q_type, source_text_en, order_index, section, meta_json)
+            SELECT id, document_id, q_no, q_type, source_text_en, order_index, section, meta_json
+            FROM questions_pre_ranking_migration
+            """
+        )
+        conn.execute("DROP TABLE questions_pre_ranking_migration")
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+    conn.execute("PRAGMA foreign_keys = ON")
 
 
 def create_project(

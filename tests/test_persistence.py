@@ -384,3 +384,106 @@ def test_touch_timestamps_are_present_and_non_decreasing(tmp_path):
     ).fetchone()[0]
     assert project_after is not None and project_after >= project_before
     assert document_after is not None and document_after >= document_before
+
+
+def test_save_ai_results_updates_only_ai_part_of_extras(tmp_path):
+    from engine import db
+    from engine.persistence import save_ai_results
+
+    conn = db.init_db(str(tmp_path / "s.sqlite"))
+    pid = db.create_project(conn, "p", "en", "zh-CN")
+    did = db.add_document(conn, pid, "f.csv", "x")
+    db.write_document_extras(conn, did, {"ai_results": {"Q1": {"": {"a": 1}}}, "images": {"Q1": ["keep"]}})
+
+    save_ai_results(conn, did, {"Q2": {"": {"assignments": []}}})
+
+    extras = db.read_document_extras(conn, did)
+    assert extras["images"] == {"Q1": ["keep"]}
+    # 整份覆盖：旧的 Q1 结果不在新的 ai_results 里，就应该消失（重新生成/清除的语义）
+    assert extras["ai_results"] == {"Q2": {"": {"assignments": []}}}
+    conn.close()
+
+
+def test_save_images_updates_only_requested_question_and_touches_document(tmp_path):
+    from engine import db
+    from engine.persistence import save_images
+
+    conn = db.init_db(str(tmp_path / "images.sqlite"))
+    pid = _project(conn)
+    did = db.add_document(conn, pid, "f.csv", "csv")
+    original = {
+        "images": {"Q1": [{"name": "old.png"}], "Q2": [{"name": "keep.png"}]},
+        "ai_results": {"Q1": {"": {"assignments": []}}},
+        "images_per_row": {"Q1": 2},
+        "include_chart_in_grid": {"Q1": False},
+        "label_overrides": {"Q1": {"A": "Edited label"}},
+        "future_field": {"keep": True},
+    }
+    db.write_document_extras(conn, did, original)
+    with conn:
+        conn.execute("UPDATE documents SET updated_at = '2000-01-01' WHERE id = ?", (did,))
+    payload = [{"name": "new.jpg", "caption": "New", "bytes_b64": "YWJj", "zoom": 85, "mime": "image/jpeg"}]
+
+    save_images(conn, did, "Q1", payload)
+
+    expected = {**original, "images": {**original["images"], "Q1": payload}}
+    assert db.read_document_extras(conn, did) == expected
+    assert conn.execute("SELECT updated_at FROM documents WHERE id = ?", (did,)).fetchone()[0] > "2000-01-01"
+    conn.close()
+
+
+def test_save_images_empty_list_removes_question_key(tmp_path):
+    from engine import db
+    from engine.persistence import save_images
+
+    conn = db.init_db(str(tmp_path / "images.sqlite"))
+    did = db.add_document(conn, _project(conn), "f.csv", "csv")
+    db.write_document_extras(conn, did, {"images": {"Q1": ["delete"], "Q2": ["keep"]}, "ai_results": {"keep": True}})
+
+    save_images(conn, did, "Q1", [])
+    save_images(conn, did, "Q1", [])
+
+    assert db.read_document_extras(conn, did) == {"images": {"Q2": ["keep"]}, "ai_results": {"keep": True}}
+    conn.close()
+
+
+@pytest.mark.parametrize("existing", [None, {}, {"ai_results": {"keep": True}}])
+def test_save_images_without_existing_images(tmp_path, existing):
+    from engine import db
+    from engine.persistence import save_images
+
+    conn = db.init_db(str(tmp_path / "images.sqlite"))
+    did = db.add_document(conn, _project(conn), "f.csv", "csv")
+    if existing is not None:
+        db.write_document_extras(conn, did, existing)
+    # 清空尚无图片的题目也应安全。
+    save_images(conn, did, "Q1", [])
+    payload = [{"name": "new.png", "bytes_b64": "YWJj", "zoom": 60, "mime": "image/png"}]
+    save_images(conn, did, "Q1", payload)
+
+    assert db.read_document_extras(conn, did) == {**(existing or {}), "images": {"Q1": payload}}
+    conn.close()
+
+
+def test_ranking_save_load_update_preserves_all_ranks_and_translations(tmp_path):
+    from engine import stats
+
+    conn = init_db(str(tmp_path / "__TEST__ranking.sqlite"))
+    try:
+        project_id = create_project(conn, "__TEST__ranking", "en", "zh")
+        columns = [f"__TEST__Rank-{label}" for label in ("A", "B", "C", "D")]
+        df = pd.DataFrame([["1", "2", "3", "4"], ["4", "3", "2", "1"], ["2", None, "1", None]], columns=columns)
+        unit = {"kind": "ranking", "section": "正式", "title": "__TEST__Rank", "display_no": "Q1", "columns": columns}
+        translations = {"__TEST__Rank": "__TEST__排序", "A": "甲", "B": "乙", "C": "丙", "D": "丁"}
+        method = {"platform_source": "__TEST__Credamo", "is_branched": False, "branch_count": None, "screen_out_rule": "", "skip_logic_note": ""}
+        document_id = save_analysis(conn, project_id, [unit], df, {}, translations, method, [], "__TEST__ranking.csv")
+        for _ in range(2):
+            result = load_analysis(conn, document_id)
+            assert result["units"] == [unit]
+            pd.testing.assert_frame_equal(result["df_all"], df)
+            assert result["translation_cache"] == translations
+            for col in columns:
+                assert stats.ranking_option_stats(result["df_all"], col, 4) == stats.ranking_option_stats(df, col, 4)
+            update_analysis(conn, document_id, project_id, result["units"], result["df_all"], {}, result["translation_cache"], method, [])
+    finally:
+        conn.close()

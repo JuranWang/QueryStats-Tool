@@ -18,7 +18,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import html as html_lib
+import io
 import json
+import mimetypes
 import re
 import sys
 import tempfile
@@ -30,9 +32,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 import streamlit as st
+from PIL import Image as PILImage
 from streamlit_echarts import st_echarts
 
 from datetime import datetime
+
+from engine.i18n import get_lang, t
+from app_streamlit.lang_ui import init_language
 
 from engine import (
     ai_classify,
@@ -41,12 +47,29 @@ from engine import (
     chart_spec,
     clean,
     db,
+    export_markdown,
+    export_pdf,
     export_word,
     ingest,
+    mapping_memory,
     persistence,
     project_naming,
     stats,
 )
+
+
+DB_PATH = PROJECT_ROOT / "data" / "app.db"
+
+
+def _get_db_conn():
+    """整个 app 共用一个 SQLite 连接（存在 st.session_state 里，不用每次重开）。"""
+
+    if "db_conn" not in st.session_state:
+        st.session_state["db_conn"] = db.init_db(str(DB_PATH))
+    return st.session_state["db_conn"]
+
+
+init_language(_get_db_conn())
 
 
 # st.set_page_config 不在这里调用——这个文件现在是 Home.py 多页应用里的一个子页面，
@@ -57,11 +80,11 @@ from engine import (
 # session_state 被重置掉（比如服务端重启后浏览器还停在这一页）就彻底走不出去了。
 nav_col1, nav_col2 = st.columns([1, 1])
 with nav_col1:
-    if st.button("← 返回首页"):
+    if st.button(t("← 返回首页")):
         st.switch_page("views/home_view.py")
 if st.session_state.get("current_project_id") is not None:
     with nav_col2:
-        if st.button("← 返回项目工作区"):
+        if st.button(t("← 返回项目工作区")):
             st.switch_page("views/project_view.py")
 
 # 视觉重设计 v2（设计文档 v0.12）：保留原来定下来的"蓝调报告"风格，另外新建一个
@@ -107,6 +130,14 @@ VISUAL_THEMES = {
 # 页面最上面的 CSS 用上"这次该显示哪个风格"，不用等 selectbox 那行代码跑到。第一次
 # 打开页面 session_state 里还没有这个 key，退回默认的 "blue"。
 visual_theme_name = st.session_state.get("visual_theme", "blue")
+if visual_theme_name not in VISUAL_THEMES:
+    # 真实反馈：这个 key 有时候会被塞进一个不是 "blue"/"minimalist" 的值（目前怀疑是
+    # Streamlit 热重载时前端缓存的旧 widget 状态跟服务端重新对齐，把显示用的中文/英文
+    # 标签文字当成了真正的值传回来——没有确凿证据坐实，但不管起因是什么，这道防线都该
+    # 加：读到一个不认识的值就退回默认风格，不能让整页直接崩掉。同时把 session_state
+    # 纠正回来，不然下面 478 行那个下拉框还会再读到同一个坏值。
+    visual_theme_name = "blue"
+    st.session_state["visual_theme"] = "blue"
 theme = VISUAL_THEMES[visual_theme_name]
 
 
@@ -455,14 +486,14 @@ st.markdown(f"""
 top_title_col, top_theme_col, top_save_col = st.columns([6.3, 2.4, 1.3])
 with top_theme_col:
     visual_theme_name = st.selectbox(
-        "界面风格",
+        t("界面风格"),
         options=list(VISUAL_THEMES.keys()),
-        format_func=lambda k: VISUAL_THEMES[k]["label"],
+        format_func=lambda k: t(VISUAL_THEMES[k]["label"]),
         key="visual_theme",
         label_visibility="collapsed",
-        help="切换标题字体／题目外框／结论字号；Streamlit 原生控件（按钮/勾选框/下拉框）固定跟随「蓝调报告」，这是已知限制，不是没切换生效。",
+        help=t("切换标题字体／题目外框／结论字号；Streamlit 原生控件（按钮/勾选框/下拉框）固定跟随「蓝调报告」，这是已知限制，不是没切换生效。"),
     )
-st.caption("设计文档最新版本 1～10 全部框架的真实调用演示。")
+st.caption(t("设计文档最新版本 1～10 全部框架的真实调用演示。"))
 
 # 圈码数字（①②③…）在换了新字体之后，个别字形在浏览器里会被替换成不搭配的后备字体、
 # 渲染得特别大（真实截图看到 ⑥/⑪ 整个字符比旁边的标题文字大好几倍，还压住了后面的字）——
@@ -480,7 +511,7 @@ SIDEBAR_NAV = [
     ("8. 交叉分析", "sec8"),
     ("9. AI 洞察", "sec9"),
     ("10. 受访者信息", "sec10"),
-    ("11. 导出 Word", "sec11"),
+    ("11. 导出", "sec11"),
 ]
 SECTION_ANCHOR = {"筛选": "sec3", "正式": "sec4", "基础信息": "sec5"}
 
@@ -549,17 +580,6 @@ def _is_chinese(text: str) -> bool:
     return bool(CJK_PATTERN.search(str(text)))
 
 
-DB_PATH = PROJECT_ROOT / "data" / "app.db"
-
-
-def _get_db_conn():
-    """整个 app 共用一个 SQLite 连接（存在 st.session_state 里，不用每次重开）。"""
-
-    if "db_conn" not in st.session_state:
-        st.session_state["db_conn"] = db.init_db(str(DB_PATH))
-    return st.session_state["db_conn"]
-
-
 def _get_provider_or_none(purpose: str = "general"):
     """按 Home 页设置的供应商/模型/API key 构造 provider；拿不到就返回 None，
     具体原因（没配 key、供应商名不对等）存进 st.session_state["_provider_error::<purpose>"]，
@@ -587,7 +607,7 @@ def _get_provider_or_none(purpose: str = "general"):
 
 def provider_error_message(purpose: str = "general") -> str:
     return st.session_state.get(f"_provider_error::{purpose}") or (
-        "没有配置可用的 AI 供应商，去首页「API/模型设置」填一下。"
+        t("没有配置可用的 AI 供应商，去首页「API/模型设置」填一下。")
     )
 
 
@@ -632,13 +652,13 @@ def translate_texts_cached(texts: list[str]) -> tuple[dict[str, str], str | None
 
     provider = _get_provider_or_none(purpose="translation")
     if provider is None:
-        return cache, f"{provider_error_message('translation')}，暂时显示英文原文"
+        return cache, t("{error}，暂时显示英文原文", error=provider_error_message('translation'))
 
     items = [{"response_id": i, "text_en": t} for i, t in enumerate(missing)]
     try:
         results = ai_translate.translate_verbatims(provider, items, protected_terms=[])
     except Exception as exc:  # noqa: BLE001
-        return cache, f"自动翻译失败（{exc}），暂时显示英文原文"
+        return cache, t("自动翻译失败（{error}），暂时显示英文原文", error=exc)
 
     changed = False
     bad_count = 0
@@ -652,7 +672,7 @@ def translate_texts_cached(texts: list[str]) -> tuple[dict[str, str], str | None
     if changed:
         _persist_translation_cache(cache)
 
-    return cache, (f"有 {bad_count} 条翻译没通过校验，暂时显示英文原文，建议人工核对" if bad_count else None)
+    return cache, (t("有 {count} 条翻译没通过校验，暂时显示英文原文，建议人工核对", count=bad_count) if bad_count else None)
 
 
 def render_question_header(
@@ -679,13 +699,13 @@ def render_question_header(
     label_map, title_zh, note = _compute_label_map(title, option_values)
 
     if _is_chinese(title):
-        st.markdown(f"**{display_prefix}{title}【{type_label}】**")
+        st.markdown(t("**{prefix}{title}【{question_type}】**", prefix=display_prefix, title=title, question_type=type_label))
         return label_map, None
 
-    st.markdown(f"**{display_prefix}{title_zh}【{type_label}】**")
+    st.markdown(t("**{prefix}{title}【{question_type}】**", prefix=display_prefix, title=title_zh, question_type=type_label))
     caption = f"*{title}*"
     if note:
-        caption += f"　（{note}）"
+        caption += t("　（{note}）", note=note)
     return label_map, caption
 
 
@@ -732,8 +752,8 @@ def render_label_override_editor(q_no: str, display_result: list[dict]) -> list[
 
     state_key = f"label_overrides_{q_no}"
     overrides = st.session_state.setdefault(state_key, {})
-    with st.popover("", icon=":material/edit:", help="编辑图表上显示的文字"):
-        st.caption("留空就用自动生成的文字；改了这里，下面的图表和排版截图会跟着变。")
+    with st.popover("", icon=":material/edit:", help=t("编辑图表上显示的文字")):
+        st.caption(t("留空就用自动生成的文字；改了这里，下面的图表和排版截图会跟着变。"))
         for row in display_result:
             original = row["option"]
             overrides[original] = st.text_input(
@@ -748,13 +768,15 @@ def render_label_override_editor(q_no: str, display_result: list[dict]) -> list[
     ]
 
 
-def render_chart_save_controls(download_col, copy_col, q_no: str, chart_kind: str, stats_result: list[dict], title: str) -> None:
+def render_chart_save_controls(
+    download_col, copy_col, q_no: str, chart_kind: str, stats_result: list[dict], title: str, title_suffix: str = ""
+) -> None:
     """下载/复制这道题的图表——单独一张图，最上面带着问题原文的中文版，不用依赖
     网页上下文就能直接发给别人。中文标题优先用翻译缓存里的结果，题目本来就是中文的
     (translation_cache 查不到) 就用原文，两种情况 title_zh 都是"这道题该显示的中文"。
     """
 
-    title_zh = st.session_state.get("translation_cache", {}).get(title, title)
+    title_zh = st.session_state.get("translation_cache", {}).get(title, title) + title_suffix
     png_bytes = _chart_snapshot_png_for_save(q_no, chart_kind, stats_result, title_zh)
     with download_col:
         st.download_button(
@@ -764,7 +786,7 @@ def render_chart_save_controls(download_col, copy_col, q_no: str, chart_kind: st
             mime="image/png",
             icon=":material/download:",
             key=f"chart_download_{q_no}",
-            help="下载这张图表",
+            help=t("下载这张图表"),
         )
     with copy_col:
         _render_copy_image_button(png_bytes, key=f"chart_copy_{q_no}")
@@ -803,7 +825,7 @@ def render_open_context_picker(q_no: str, title: str, unit_index: int, sec_units
         st.session_state[state_key] = default_no
 
     selected_no = st.multiselect(
-        "拓展其他问题回答",
+        t("拓展其他问题回答"),
         options=[u["display_no"] for u in candidates],
         format_func=lambda no: f"{no}｜{candidate_by_no[no]['title']}",
         key=state_key,
@@ -850,25 +872,6 @@ def _context_value_series(ctx_unit: dict, section_df: pd.DataFrame) -> pd.Series
 CHART_HEIGHT = {"pie": "460px", "bar_h": "380px"}
 
 
-def _should_render_interactive_chart(q_no: str) -> bool:
-    """这道题的图表要不要走网页上原来那条交互式 ECharts 路径。
-
-    只有在"确实插了图片、且用户勾了要把图表也放进排版"的时候才关掉交互图——这两个
-    条件都成立时，`render_image_attachments_grid` 会把同一份数据再画一张静态截图
-    放进排版预览里，两张图同时出现只会让人confuse"这是不是同一个东西"（真实反馈过
-    "下面多了一个不知道是什么的图"）。这里要在交互图表还没画之前就知道结果，
-    但"是否要放进排版"这个勾选框本身是在 `render_image_attachments_grid` 里才渲染
-    （在这一行代码执行之后）——用 session_state 提前读，是这个项目里已经用过好几次
-    的写法：勾选框只要带了 key，它的值在上一次 rerun 就已经写进 session_state 了，
-    不用等那一行代码真的跑到。
-    """
-
-    images = st.session_state.get(f"images_{q_no}", [])
-    if not images:
-        return True
-    return not st.session_state.get(f"include_chart_in_grid_{q_no}", True)
-
-
 def render_chart(chart_type: str, config: dict, key: str) -> None:
     config["title"] = {"text": "", "left": "center"}  # 标题已经在上面渲染过，图内不重复
     # ECharts 图表组件是用 iframe 渲染的，跟外面"纸张"卡片是两个独立的文档，CSS
@@ -912,6 +915,26 @@ def render_chart(chart_type: str, config: dict, key: str) -> None:
             st.caption(footer)
 
 
+def _persist_ai_results() -> None:
+    """把 session_state 里当前所有 AI 分类结果整份写进这份文档的正式数据（不等手动保存）。
+
+    真实反馈"每次选完 AI 开放题分析，下次打开结果就没了"——AI 结果原来只跟"手动保存"/
+    20 秒自动保存草稿走，重新打开读的是正式数据，草稿不读，所以两次保存之间跑的 AI 分类
+    关页面就丢。现在分类跑完、清除的那一刻就直接落库。文档还没有 saved_document_id
+    （理论上不会——页面开头会先把这份分析存一遍）就什么都不做。
+    """
+
+    document_id = st.session_state.get("saved_document_id")
+    if document_id is None:
+        return
+    ai_results: dict = {}
+    for key, value in st.session_state.items():
+        if isinstance(key, str) and key.startswith("ai_result_"):
+            q_no, sep, filter_key = key[len("ai_result_"):].partition("__")
+            ai_results.setdefault(q_no, {})[filter_key if sep else ""] = value
+    persistence.save_ai_results(_get_db_conn(), document_id, ai_results)
+
+
 def render_open_ai_classify_trigger(q_no: str, series: pd.Series, filter_key: str = "") -> None:
     """开放题标题行最右边的星标按钮——点开一个小弹窗选封闭/开放分类，不占正文纵向空间。
 
@@ -923,54 +946,68 @@ def render_open_ai_classify_trigger(q_no: str, series: pd.Series, filter_key: st
 
     ai_key = f"ai_result_{q_no}" if not filter_key else f"ai_result_{q_no}__{filter_key}"
 
-    with st.popover("AI 分类", use_container_width=True, key=f"ai_classify_trigger_{q_no}_{filter_key}"):
+    with st.popover(t("AI 分类"), use_container_width=True, key=f"ai_classify_trigger_{q_no}_{filter_key}"):
         if filter_key:
-            st.caption(f"当前只分析筛选出来的 {len(series)} 人（{filter_key}），不是全部受访者。")
+            st.caption(t("当前只分析筛选出来的 {count} 人（{filter}），不是全部受访者。", count=len(series), filter=filter_key))
         mode = st.radio(
-            "选择分类方式",
+            t("选择分类方式"),
             ["封闭分类（自己填类目）", "开放聚类（AI 自动提炼类目）", "自定义分析（自己写分析要求）"],
             key=f"mode_{q_no}_{filter_key}",
+            format_func=t,
         )
         categories_input = ""
         instruction_input = ""
         if mode.startswith("封闭"):
-            categories_input = st.text_input("候选类目（逗号分隔）", key=f"cats_{q_no}_{filter_key}")
+            categories_input = st.text_input(t("候选类目（逗号分隔）"), key=f"cats_{q_no}_{filter_key}")
         elif mode.startswith("自定义"):
             instruction_input = st.text_area(
-                "分析要求（比如「判断每条回答有没有提到价格敏感」）",
+                t("分析要求（比如「判断每条回答有没有提到价格敏感」）"),
                 key=f"instruction_{q_no}_{filter_key}",
-                placeholder="用自己的话描述想从这些开放题回答里提炼出什么——AI 会先按这个要求总结出几个类目，再把每条回答分到对应类目里，出来的还是图表能直接画的分类结果。",
+                placeholder=t("用自己的话描述想从这些开放题回答里提炼出什么——AI 会先按这个要求总结出几个类目，再把每条回答分到对应类目里，出来的还是图表能直接画的分类结果。"),
             )
 
-        if st.button("运行", key=f"run_ai_{q_no}_{filter_key}", type="primary"):
+        has_existing_result = ai_key in st.session_state
+        if has_existing_result:
+            st.caption(t("这道题已经有一份 AI 分析结果，已自动保存。重新生成会先清除上一次的结果。"))
+            if st.button(t("清除已有结果"), key=f"clear_ai_{q_no}_{filter_key}"):
+                del st.session_state[ai_key]
+                _persist_ai_results()
+                st.rerun()
+        if st.button(
+            t("重新生成（清除上一次结果）") if has_existing_result else t("运行"),
+            key=f"run_ai_{q_no}_{filter_key}",
+            type="primary",
+        ):
             provider = _get_provider_or_none()
             if provider is None:
                 st.warning(provider_error_message())
             else:
                 responses = [{"response_id": int(i), "text": str(text)} for i, text in series.items()]
                 try:
-                    with st.spinner("调用 AI 中…"):
+                    with st.spinner(t("调用 AI 中…")):
                         if mode.startswith("封闭"):
                             categories = [c.strip() for c in categories_input.split(",") if c.strip()]
                             if not categories:
-                                st.error("请先填至少一个候选类目。")
+                                st.error(t("请先填至少一个候选类目。"))
                                 st.stop()
                             assignments = ai_classify.classify_closed(provider, responses, categories)
                             st.session_state[ai_key] = {"categories": categories, "assignments": assignments}
                         elif mode.startswith("自定义"):
                             if not instruction_input.strip():
-                                st.error("请先填写分析要求。")
+                                st.error(t("请先填写分析要求。"))
                                 st.stop()
                             result = ai_classify.classify_custom(provider, responses, instruction_input)
                             st.session_state[ai_key] = result
                         else:
                             result = ai_classify.classify_open(provider, responses)
                             st.session_state[ai_key] = result
+                    _persist_ai_results()
+                    st.toast(t("AI 分析结果已自动保存。"))
                 except Exception as exc:  # noqa: BLE001
-                    st.error(f"AI 调用失败：{exc}")
+                    st.error(t("AI 调用失败：{error}", error=exc))
 
 
-def render_open_ai_classify_results(q_no: str, series: pd.Series, filter_key: str = "") -> None:
+def render_open_ai_classify_results(q_no: str, series: pd.Series, filter_key: str = "", title: str = "") -> None:
     """AI 分类结果——渲染在正文里（不是弹窗里），弹窗关掉之后结果还在。
 
     filter_key 要跟 render_open_ai_classify_trigger 传的保持一致，才能读到同一份结果——
@@ -983,48 +1020,37 @@ def render_open_ai_classify_results(q_no: str, series: pd.Series, filter_key: st
         id_to_category = {a["response_id"]: a["category"] for a in assignments}
         display_df = series.to_frame(name="原文")
         display_df["AI 分类"] = [id_to_category.get(int(i), "") for i in series.index]
-        st.dataframe(display_df)
+        st.dataframe(display_df, column_config={"原文": t("原文"), "AI 分类": t("AI 分类")})
 
         # Python 自己算数字，不采信 AI 的计数——分类结果喂回 stats 引擎
         category_series = pd.Series([a["category"] for a in assignments])
         cat_stats = stats.single_choice_stats(category_series)
         cat_chart_type = chart_spec.choose_chart_type("single", len(cat_stats))
-        cat_config = chart_spec.build_chart_config(cat_chart_type, cat_stats, "", f"n = {len(category_series)}", color_palette=_active_chart_palette())
-        st.caption("AI 分类分布")
+        cat_config = chart_spec.build_chart_config(cat_chart_type, cat_stats, "", t("n = {n}", n=len(category_series)), color_palette=_active_chart_palette())
+        # 跟单选题图表一样的"复制/下载"入口：一条深色小横条，标题在左、图标在右。
+        # 缓存/控件 key 要跟这道题本身（开放题没有正文图表，但保险起见）和"不同筛选条件下的
+        # 分类结果"都区分开，用 q_no + ai + filter_key 拼一个独立的 id。
+        # filter_key 可能带中文/等号/空格（来自筛选条件），会破坏复制按钮 iframe 里的
+        # CSS 选择器（#id），所以只取它的短哈希拼进 id。
+        save_id = f"{q_no}_ai" + (f"_{hashlib.md5(filter_key.encode()).hexdigest()[:8]}" if filter_key else "")
+        with st.container(key=f"qbar_ai_{save_id}"):
+            header_col, copy_col, download_col = st.columns([10, 1, 1], gap=8)
+            with header_col:
+                st.markdown(f"**{t('AI 分类分布')}**")
+            render_chart_save_controls(
+                download_col, copy_col, save_id, "single", cat_stats, title, title_suffix=t("｜AI 分类分布")
+            )
         render_chart(cat_chart_type, cat_config, key=f"ai_chart_{q_no}_{filter_key}")
 
 
-def _chart_snapshot_png(q_no: str, chart_kind: str, stats_result: list[dict]) -> bytes:
-    """把图表渲染成一张 PNG（复用 export_word.py 已经测过的 matplotlib 渲染逻辑），
-    结果按内容指纹缓存在 session_state 里。
-
-    这个缓存不是可有可无的优化：拖拽画布里拖动/调整大小结束时会触发一次脚本重跑
-    （Streamlit 自定义组件的通信方式就是"组件值一变就整页重跑一次脚本"）——如果不缓存，
-    每次都要重新跑一次 matplotlib（几百毫秒的 CPU 工作），拖拽会卡到看起来像坏的。
-    指纹只看 option/n，数据没变就直接用缓存，不重新画。
-    """
-
-    fingerprint = (chart_kind, tuple((row["option"], row["n"]) for row in stats_result))
-    cache_key = f"chart_png_cache_{q_no}"
-    cached = st.session_state.get(cache_key)
-    if cached is not None and cached[0] == fingerprint:
-        return cached[1]
-
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-        export_word._render_chart_image(chart_kind, stats_result, tmp.name, color_palette=_active_chart_palette())
-        png_bytes = Path(tmp.name).read_bytes()
-
-    st.session_state[cache_key] = (fingerprint, png_bytes)
-    return png_bytes
-
-
 def _chart_snapshot_png_for_save(q_no: str, chart_kind: str, stats_result: list[dict], title_zh: str) -> bytes:
-    """"保存单张图表"按钮用的版本——比 _chart_snapshot_png 多把问题原文（中文版）
-    画在图表最上面，这样单独存下来/发给别人的这张图，不用额外说明是哪道题。跟排版
-    画布用的那份缓存分开存（那份不带标题，两者用途不一样，不能共用一个缓存 key）。
+    """"保存单张图表"按钮用的版本——把问题原文（中文版）画在图表最上面，这样单独
+    存下来/发给别人的这张图，不用额外说明是哪道题。结果按内容指纹缓存在
+    session_state 里，避免每次重跑脚本都要重新调一次 matplotlib（几百毫秒的 CPU
+    工作，不缓存会让相关交互卡到看起来像坏的）。
     """
 
-    fingerprint = (chart_kind, title_zh, tuple((row["option"], row["n"]) for row in stats_result))
+    fingerprint = (get_lang(), chart_kind, title_zh, tuple((row["option"], row["n"]) for row in stats_result))
     cache_key = f"chart_png_with_title_cache_{q_no}"
     cached = st.session_state.get(cache_key)
     if cached is not None and cached[0] == fingerprint:
@@ -1079,7 +1105,7 @@ def _render_copy_image_button(png_bytes: bytes, key: str) -> None:
     #{key}:hover svg {{ stroke:{bar_color}; }}
     </style>
     <div style="display:flex;align-items:center;gap:8px;background:{bar_color};">
-        <button id="{key}" title="复制这张图表到剪贴板">
+        <button id="{key}" title="{html_lib.escape(t('复制这张图表到剪贴板'), quote=True)}">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ffffff"
                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="9" y="9" width="13" height="13" rx="2"></rect>
@@ -1095,10 +1121,10 @@ def _render_copy_image_button(png_bytes: bytes, key: str) -> None:
             const res = await fetch("data:image/png;base64,{b64}");
             const blob = await res.blob();
             await navigator.clipboard.write([new ClipboardItem({{"image/png": blob}})]);
-            status.textContent = "已复制";
+            status.textContent = {json.dumps(t("已复制"))};
             status.style.color = "#2E7D52";
         }} catch (err) {{
-            status.textContent = "复制失败";
+            status.textContent = {json.dumps(t("复制失败"))};
             status.style.color = "#B23B3B";
             console.error(err);
         }}
@@ -1109,87 +1135,326 @@ def _render_copy_image_button(png_bytes: bytes, key: str) -> None:
     st.components.v1.html(html, height=42)
 
 
+# "排版预览"里图片的基准高度／间距——真实反馈："别再让我自己调每张图的大小了，
+# 干脆定死一个基准高度：饼图现在的高度（CHART_HEIGHT["pie"]）的 2/3"。用户自己选的
+# 这个基准，理由是饼图旁边常常要摆照片，2/3 饼图高度看着协调，还顺带保证不会比图表
+# 本身还醒目。用 CHART_HEIGHT 算出来而不是单独写死一个数字，饼图高度以后要是改了，
+# 这个基准跟着自动变，不会出现"两个地方都存了一份高度、改了一个忘了改另一个"。
+IMAGE_ROW_BASE_HEIGHT_PX = round(int(CHART_HEIGHT["pie"].removesuffix("px")) * 2 / 3)
+IMAGE_ROW_BASE_GAP_PX = 16
+
+# "排版预览"这一行实际有多宽——Streamlit 没给服务端 Python 提供"卡片容器实际渲染了
+# 多宽"这个信息（跟着浏览器窗口变，不是写死的），这里用桌面浏览器正常宽度下真实
+# 截图量出来的经验值。`_render_tiles_row` 靠这个值判断"每行放几张"设定的张数在当前
+# 图片大小下放不放得下，放不下就把这一行统一缩小，保证张数优先于大小（真实反馈：
+# 「每行放几张」原来不是硬约束，跟图片大小会打架）。
+ROW_WIDTH_ASSUMPTION_PX = 940
+
+
+def _image_mime(img: dict) -> str:
+    """旧图片没有 MIME 时从文件名猜测，无法识别时按 PNG 处理。"""
+
+    return img.get("mime") or mimetypes.guess_type(img.get("name", ""))[0] or "image/png"
+
+
+def _images_payload(images: list[dict]) -> list[dict]:
+    """即时保存与整份保存共用图片编码，避免后一次保存丢失字段。
+
+    真实反馈：手动逐张调大小太麻烦，改成"统一按基准高度对齐，放不下才自动缩小"
+    （见 `_render_tiles_row`），图片不再各自存一个可调的 zoom 了——旧数据里如果还有
+    "zoom" 字段，读回来直接忽略，不会报错，也不会被这里重新写回去。
+    """
+
+    return [
+        {
+            "name": img["name"],
+            "caption": img.get("caption", ""),
+            "bytes_b64": base64.b64encode(img["bytes"]).decode("ascii"),
+            "mime": _image_mime(img),
+        }
+        for img in images
+    ]
+
+
+def _persist_images(q_no: str) -> None:
+    """把 session_state 里当前题目的图片写进这份文档的正式数据（不等手动保存）。
+
+    跟 AI 分类结果一样，图片新增/编辑/删除后直接落库，重新打开不依赖自动保存草稿。
+    文档还没有 saved_document_id 就什么都不做。
+    """
+
+    document_id = st.session_state.get("saved_document_id")
+    if document_id is None:
+        return
+    images_payload = _images_payload(st.session_state.get(f"images_{q_no}", []))
+    persistence.save_images(_get_db_conn(), document_id, q_no, images_payload)
+
+
+def _render_zoomable_image(image_bytes: bytes, width_pct: int) -> None:
+    """"插入图片"弹窗里管理列表／图库预览用的小缩略图，用 Streamlit 原生 `st.image`
+    （不是拼 `<img>` 字符串）。这里只是给用户认一眼"这是哪张图"，不是最终排版效果——
+    最终排版（等高对齐、放不下自动缩小）由 `_render_tiles_row` 决定，跟这份预览的
+    大小无关，固定用一个看着舒服的缩略图比例就行，不需要能调。
+
+    真实反馈"点图片跳到一个空白页"——第一版是把 base64 拼成 `data:` URI 放进
+    `<a href target=_blank>`，现代 Chrome/Firefox 出于安全考虑不允许从链接点击直接
+    整页跳转到 data: URI，点了只会打开一个空白页。第二版改成点击时用 `onclick` 里的
+    JS 现场转成 blob: URL 再 `window.open`——结果 `st.markdown(unsafe_allow_html=True)`
+    会把 `onclick` 这种事件属性直接过滤掉（真机确认过：渲染出来的 `<img>` 标签里
+    `onclick` 整个不见了，样式类属性都还在，说明是选择性过滤事件属性，不是把整段
+    HTML 都拦了），JS 根本没机会跑。
+
+    现在这版放弃拼 HTML：用 `st.image` 原生渲染，缩略图大小靠"把图片放进一个按比例
+    分栏的 `st.columns` 窄栏里 + `use_container_width=True`"实现（栏宽占整行的百分之几
+    × 图片撑满这栏 = 视觉上等价的百分比缩放）。这样还顺带白拿 Streamlit 自带的悬浮
+    工具栏（鼠标移上去右上角会出现一个全屏图标），点了在页面内弹出原始分辨率大图，
+    不是导航到别的页面，不会撞上任何浏览器的跨页面安全限制。
+    """
+
+    width_pct = max(20, min(100, int(width_pct)))
+    if width_pct >= 100:
+        st.image(image_bytes, use_container_width=True)
+    else:
+        narrow_col, _ = st.columns([width_pct, 100 - width_pct])
+        with narrow_col:
+            st.image(image_bytes, use_container_width=True)
+
+
+def _image_aspect_ratio(image_bytes: bytes) -> float:
+    """原图的宽/高比——`_render_tiles_row` 算"等高排版时每张图该多宽"要用到。
+
+    解码失败（理论上不会——上传时 `file_uploader` 已经限定了 png/jpg/jpeg，能存进
+    去的字节都是真图片）就退回 1.0（当正方形处理），不能让一张图解码失败拖累
+    整行都渲染不出来。
+    """
+
+    try:
+        with PILImage.open(io.BytesIO(image_bytes)) as img:
+            width, height = img.size
+        return width / height if height else 1.0
+    except Exception:  # noqa: BLE001
+        return 1.0
+
+
+def _render_tiles_row(row_tiles: list[dict], single_image_align: str = "center") -> None:
+    """"排版预览"里一行图片按统一的基准高度对齐，宽度各自按原图比例走，且保证
+    "每行放几张"这个数不被打破——这是用户自己定下来的规则，不再让每张图各自调大小：
+
+    1. 基准高度固定为 `IMAGE_ROW_BASE_HEIGHT_PX`（饼图高度的 2/3，用户自己选的
+       比例）。这一行的图片按各自真实长宽比、都用这个基准高度算出天然想要的宽度。
+    2. 天然总宽度（含间距）放得下这一行假定的可用宽度，就按基准高度原样显示，
+       不缩小。放不下，把这一行所有图片的高度和间距按同一个比例统一缩小，缩到
+       刚好放得下——不裁切、不变形，只是整体缩小，"每行放几张"永远是真的（不会
+       因为放不下而被迫换行/减少张数）。这套"放得下就不缩、放不下就统一缩"的算法
+       跟上一版（每张图自己独立可调大小）一脉相承，只是现在所有图片的"基准高度"
+       都相等，不再有各自独立的缩放值。
+    3. 只有一张图（这一行没有别的图片一起排版）时，天然宽度不会超出可用宽度
+       （单独一张不存在"排不下"的问题），这时按 `single_image_align` 居中或居左——
+       真实反馈"只放一张图的时候，默认居中，也可以选居左"。多张图排一行的默认
+       靠左对齐不受这个参数影响。
+
+    ROW_WIDTH_ASSUMPTION_PX：这个工具的"纸张"卡片没有写死的像素宽度（能跟着浏览器
+    宽度变），Streamlit 也没给服务端 Python 提供"这个容器实际渲染了多宽"这个信息，
+    没法算出一个总是精确的数字。这里用一个基于真实截图量出来的经验值（桌面浏览器
+    正常宽度下，卡片内容区大约这么宽）来做"放不放得下"的判断——比这个宽的浏览器
+    窗口，图片可能比理论上能放的还稍微小一点；比这个窄的，可能会略微超出（有
+    `overflow-x` 兜底，最多出现一条很少见的横向滚动条，不会整个布局崩掉）。
+    """
+
+    if not row_tiles:
+        return
+
+    ratios = [_image_aspect_ratio(tile["bytes"]) for tile in row_tiles]
+    wanted_height = IMAGE_ROW_BASE_HEIGHT_PX
+    wanted_gap_px = IMAGE_ROW_BASE_GAP_PX
+
+    wanted_total_width = wanted_height * sum(ratios) + wanted_gap_px * (len(row_tiles) - 1)
+    scale = 1.0
+    if wanted_total_width > ROW_WIDTH_ASSUMPTION_PX:
+        scale = ROW_WIDTH_ASSUMPTION_PX / wanted_total_width
+
+    height_px = max(24, round(wanted_height * scale))
+    gap_px = max(4, round(wanted_gap_px * scale))
+    items_html = []
+    for tile in row_tiles:
+        b64 = base64.b64encode(tile["bytes"]).decode("ascii")
+        caption_html = ""
+        if tile.get("caption"):
+            caption_html = (
+                '<figcaption style="margin-top:0.3rem; font-size:0.8rem; color:#6B6B6B; '
+                f'text-align:center; max-width:100%;">{html_lib.escape(tile["caption"])}</figcaption>'
+            )
+        items_html.append(
+            '<figure style="margin:0; display:flex; flex-direction:column; align-items:center; flex:0 0 auto;">'
+            f'<img src="data:{tile["mime"]};base64,{b64}" alt="" '
+            f'style="height:{height_px}px; width:auto; display:block; border-radius:0;">'
+            f'{caption_html}</figure>'
+        )
+    justify = "flex-start"
+    if len(row_tiles) == 1:
+        justify = "center" if single_image_align == "center" else "flex-start"
+    st.markdown(
+        # width:100% 不能漏——真实反馈"居中设置了但完全没居中"：这段 HTML 是 st.markdown
+        # 拼出来的一个普通 <div>，没有显式 width 的话，浏览器会让它按内容宽度收缩
+        # （shrink-to-fit），不会自动撑满卡片宽度。justify-content:center 是"在容器内部
+        # 把内容居中"，容器本身如果已经缩到跟内容一样宽，就没有多余空间可以居中——
+        # 两张图那一行看着没占满卡片宽度、单独一张图完全没居中，都是这同一个根因。
+        f'<div style="display:flex; align-items:flex-end; justify-content:{justify}; '
+        f'width:100%; flex-wrap:nowrap; overflow-x:auto; gap:{gap_px}px; margin-bottom:0.75rem;">'
+        + "".join(items_html) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _collect_image_library(exclude_q_no: str) -> list[dict]:
+    """收集其它题目的图片，按题号排序后去重，保留最早题号作为来源。"""
+
+    sources = sorted(
+        (key[len("images_"):], value)
+        for key, value in st.session_state.items()
+        if isinstance(key, str) and key.startswith("images_")
+        and key != f"images_{exclude_q_no}" and isinstance(value, list)
+    )
+    library = []
+    seen = set()
+    for q_no, images in sources:
+        for img in images:
+            bytes_hash = img.get("bytes_hash") or hashlib.md5(img["bytes"]).hexdigest()
+            if bytes_hash in seen:
+                continue
+            seen.add(bytes_hash)
+            library.append({
+                "bytes": img["bytes"], "name": img["name"], "mime": _image_mime(img),
+                "bytes_hash": bytes_hash, "source_q_no": q_no,
+            })
+    return library
+
+
 def render_image_attachments_trigger(q_no: str) -> None:
     state_key = f"images_{q_no}"
     images = st.session_state.setdefault(state_key, [])
 
-    with st.popover("", icon=":material/add_photo_alternate:", help="插入图片"):
-        # file_uploader 有个坑：只要 key 不变，它会一直记得这次选过的文件、每次 rerun
-        # 都原样交还给你，不是"只在你选文件的那一次"才返回——不是靠 key 换掉来复位的话，
-        # 删除一张图片之后紧接着的那次 rerun，这里会看到"上传框里还有这个文件、但
-        # images 里已经没有了"，判定成"新上传"又给加回去，delete 按钮等于白点了。
-        # 换 key 强制这个控件复位，成功吃进一批文件之后就跟它没关系了。
-        uploader_key_counter = st.session_state.setdefault(f"img_uploader_key_{q_no}", 0)
-        uploaded_images = st.file_uploader(
-            "选择图片（可多选，可重复调用多次追加）",
-            type=["png", "jpg", "jpeg"],
-            accept_multiple_files=True,
-            key=f"img_upload_{q_no}_{uploader_key_counter}",
-        )
-        if uploaded_images:
-            existing_names = {img["name"] for img in images}
-            added = False
-            for f in uploaded_images:
-                if f.name not in existing_names:
-                    content = f.getvalue()
-                    # bytes_hash 只在插入这一刻算一次，存起来备用——判断"要不要触发新的
-                    # 保存"的时候只比这个哈希，不用每次 rerun 都重新算一遍图片字节。
-                    images.append(
-                        {
-                            "bytes": content,
-                            "name": f.name,
+    # 移动/删除后下标会换人；在下次创建控件前清理旧值，避免说明文字串到另一张图。
+    reset_count = st.session_state.pop(f"img_reset_widgets_{q_no}", 0)
+    for i in range(reset_count):
+        st.session_state.pop(f"img_caption_{q_no}_{i}", None)
+
+    with st.popover("", icon=":material/add_photo_alternate:", help=t("插入图片")):
+        upload_tab, library_tab = st.tabs([t("上传新图片"), t("从其他题目复制")])
+        with upload_tab:
+            # file_uploader 有个坑：只要 key 不变，它会一直记得这次选过的文件、每次 rerun
+            # 都原样交还给你，不是"只在你选文件的那一次"才返回——不是靠 key 换掉来复位的话，
+            # 删除一张图片之后紧接着的那次 rerun，这里会看到"上传框里还有这个文件、但
+            # images 里已经没有了"，判定成"新上传"又给加回去，delete 按钮等于白点了。
+            # 换 key 强制这个控件复位，成功吃进一批文件之后就跟它没关系了。
+            uploader_key_counter = st.session_state.setdefault(f"img_uploader_key_{q_no}", 0)
+            uploaded_images = st.file_uploader(
+                t("选择图片（可多选，可重复调用多次追加）"),
+                type=["png", "jpg", "jpeg"],
+                accept_multiple_files=True,
+                key=f"img_upload_{q_no}_{uploader_key_counter}",
+            )
+            if uploaded_images:
+                existing_names = {img["name"] for img in images}
+                added = False
+                for f in uploaded_images:
+                    if f.name not in existing_names:
+                        content = f.getvalue()
+                        # bytes_hash 只在插入这一刻算一次，存起来备用——判断"要不要触发新的
+                        # 保存"的时候只比这个哈希，不用每次 rerun 都重新算一遍图片字节。
+                        images.append(
+                            {
+                                "bytes": content,
+                                "name": f.name,
+                                "caption": "",
+                                "mime": f.type or _image_mime({"name": f.name}),
+                                "bytes_hash": hashlib.md5(content).hexdigest(),
+                            }
+                        )
+                        added = True
+                if added:
+                    st.session_state[f"img_uploader_key_{q_no}"] += 1
+                    _persist_images(q_no)
+                    st.rerun()
+
+        with library_tab:
+            st.caption(t("同一张图要用在好几道题时，不用重新从电脑上传——点「添加到本题」直接复用这份分析里已经传过的图。"))
+            library = _collect_image_library(q_no)
+            if not library:
+                st.caption(t("这份分析里其他题目还没有插入过图片。"))
+            for source in library:
+                preview_col, add_col = st.columns([3, 1])
+                with preview_col:
+                    _render_zoomable_image(source["bytes"], 30)
+                    st.caption(t("来自 {source_q_no}：{name}", source_q_no=source["source_q_no"], name=source["name"]))
+                with add_col:
+                    if st.button(t("添加到本题"), key=f"img_copy_{q_no}_{source['bytes_hash']}"):
+                        images.append({
+                            "bytes": source["bytes"], "name": source["name"],
+                            "mime": source["mime"], "bytes_hash": source["bytes_hash"],
                             "caption": "",
-                            "bytes_hash": hashlib.md5(content).hexdigest(),
-                        }
-                    )
-                    added = True
-            if added:
-                st.session_state[f"img_uploader_key_{q_no}"] += 1
-                st.rerun()
+                        })
+                        _persist_images(q_no)
+                        st.rerun()
+
+        if images:
+            st.caption(t("图片会按统一的基准高度自动对齐，放不下时自动等比例缩小（不会裁切、不会变形）；"
+                "用 ↑↓ 调整先后顺序。「每行放几张」和单张图片时靠左/居中，在这个弹窗关掉之后、"
+                "图片正下方的排版预览里调。"))
 
         delete_index = None
         move_swap: tuple[int, int] | None = None
+        edited = False
         for i, img in enumerate(images):
             image_col, action_col = st.columns([3, 1])
-            image_col.image(img["bytes"], use_container_width=True)
             with action_col:
                 # 排版顺序用"上移/下移"调整，不是拖拽——排版里这张图排第几个，就是它在
                 # images 这个列表里的位置，跟下面按"每行放几张"分组渲染时用的是同一个顺序。
-                if st.button("↑", key=f"img_up_{q_no}_{i}", disabled=i == 0, help="上移这张图片"):
+                if st.button("↑", key=f"img_up_{q_no}_{i}", disabled=i == 0, help=t("上移这张图片")):
                     move_swap = (i, i - 1)
-                if st.button("↓", key=f"img_down_{q_no}_{i}", disabled=i == len(images) - 1, help="下移这张图片"):
+                if st.button("↓", key=f"img_down_{q_no}_{i}", disabled=i == len(images) - 1, help=t("下移这张图片")):
                     move_swap = (i, i + 1)
-                if st.button("删除", key=f"img_del_{q_no}_{i}", help="删除这张图片"):
+                if st.button(t("删除"), key=f"img_del_{q_no}_{i}", help=t("删除这张图片")):
                     delete_index = i
-            img["caption"] = st.text_input(
-                "图片描述", value=img["caption"], key=f"img_caption_{q_no}_{i}", label_visibility="collapsed",
-                placeholder="给这张图配一行文字描述",
+            with image_col:
+                _render_zoomable_image(img["bytes"], 60)
+            caption = st.text_input(
+                t("图片描述"), value=img["caption"], key=f"img_caption_{q_no}_{i}", label_visibility="collapsed",
+                placeholder=t("给这张图配一行文字描述"),
             )
+            if caption != img.get("caption", ""):
+                img["caption"] = caption
+                edited = True
             st.divider()
         if move_swap is not None:
             a, b = move_swap
             images[a], images[b] = images[b], images[a]
+            st.session_state[f"img_reset_widgets_{q_no}"] = len(images)
+            _persist_images(q_no)
             st.rerun()
         if delete_index is not None:
+            st.session_state[f"img_reset_widgets_{q_no}"] = len(images)
             images.pop(delete_index)
+            _persist_images(q_no)
             st.rerun()
+        if edited:
+            _persist_images(q_no)
 
 
-def render_image_attachments_grid(
-    q_no: str,
-    chart_kind: str | None = None,
-    chart_stats_result: list[dict] | None = None,
-) -> None:
-    """插入图片 + 文字描述；如果这道题有图表，图表也会作为"一块"参与排版，可以跟插入的
-    图片放在同一行。排版用的是"每行放几张"+ 上下移动调整顺序，不是自由拖拽——原来那版
-    用 streamlit-elements（react-grid-layout）做自由拖拽/调整大小，两轮下来都没能在真实
+def render_image_attachments_grid(q_no: str) -> None:
+    """插入图片 + 文字描述，单独排成一行/几行——真实反馈"插入的图片不能跟饼图/柱状图
+    挤在同一行，应该在问题和分析图表之间单独成一行"：图表是算出来的分析结果，图片是
+    用户自己找补充证据用的，两种性质不同的内容混排在一起容易分不清哪个是哪个。这个
+    函数现在只管图片自己的排版，图表完全是另一条路径（调用方在这个函数和图表之间
+    直接空开，图表永远走交互式 ECharts，不再有"要不要把图表也塞进排版"这道选择）。
+
+    排版用的是"每行放几张"+ 上下移动调整顺序，不是自由拖拽——原来那版用
+    streamlit-elements（react-grid-layout）做自由拖拽/调整大小，两轮下来都没能在真实
     浏览器里跑出预期效果（这个组件本身也确认过是个不算活跃维护的第三方库），排查成本
-    已经不小；换成 Streamlit 原生的多栏布局，没有任何第三方 JS 组件依赖，图片按分到的
-    那一栏宽度等比缩放、不会变形，"上下移动"也是最基础的按钮点击，不会有"这个事件到底
-    有没有被真正触发"这种不确定性。
-
-    没有插入图片时，图表还是走原来那条交互式 ECharts 路径（保留悬浮提示这些交互能力）——
-    一旦插入了图片，图表就变成参与排版的静态截图，图表交互性和排版二选一，不能同时要。
+    已经不小；"上下移动"是最基础的按钮点击，不会有"这个事件到底有没有被真正触发"这种
+    不确定性。一行内部的排版（每张图多高、彼此间距多少、单张时怎么对齐）交给
+    `_render_tiles_row`——图片不再各自有可调的大小，统一按基准高度对齐，这是用户
+    自己定的规则："别再让我一张一张调了，干脆定死一个基准高度，放不下再自动缩小"。
     """
 
     state_key = f"images_{q_no}"
@@ -1198,50 +1463,37 @@ def render_image_attachments_grid(
     if not images:
         return
 
-    # 图表要不要一起参与排版，问一下——之前是只要这道题有图表就自动塞进去，结果是
-    # 上传好几张图之后突然多出一个不知道是什么的方块（图表被挤成 1/N 宽，缩得几乎
-    # 看不清，标注文字"图表"两个字也小得容易被忽略）。改成显式勾选，默认还是勾上
-    # （这是最早就有的设计意图——图表可以跟插入的图片并排），但至少不会莫名其妙。
-    include_chart = False
-    if chart_kind is not None:
-        include_chart = st.checkbox(
-            "这道题的图表也放进下面的排版里（跟插入的图片一起参与「每行放几张」分组）",
-            value=st.session_state.get(f"include_chart_in_grid_{q_no}", True),
-            key=f"include_chart_in_grid_{q_no}",
-        )
+    tiles = [
+        {"bytes": img["bytes"], "mime": _image_mime(img), "caption": img.get("caption", "")}
+        for img in images
+    ]
 
-    tiles: list[dict] = []
-    if include_chart:
-        tiles.append({"kind": "chart"})
-    tiles.extend({"kind": "image", **img} for img in images)
+    st.caption(t("图片先后顺序在上面「插入图片」弹窗里调；这里管下面排版分成几行、每行放几张、"
+        "单张图片时靠左还是居中。"))
 
-    if include_chart:
-        per_row_default = 2
-        per_row_help = "图表算一张，跟插入的图片一起参与排版；改小/改大之后，下面立刻按新的行宽重新分组。"
-    else:
-        per_row_default = 1
-        per_row_help = "没有把图表放进排版（或者这道题本来就没有图表），纯粹是插入的图片自己怎么分行。"
     per_row = st.number_input(
-        "每行放几张",
+        t("每行放几张"),
         min_value=1,
         max_value=6,
-        value=st.session_state.get(f"images_per_row_{q_no}", per_row_default),
+        value=st.session_state.get(f"images_per_row_{q_no}", 1),
         key=f"images_per_row_{q_no}",
-        help=per_row_help,
+        help=t("这个数是硬约束——图片统一按基准高度（饼图高度的 2/3）显示，放得下就不缩小；"
+            "这一行放不下设定的张数时，会把这一行所有图片按同一个比例统一缩小到刚好放得下"
+            "（不会裁切、不会变形），不会因为放不下就换行或者减少这一行放几张。"),
+    )
+    align = st.radio(
+        t("单张图片时的对齐方式"),
+        options=["center", "left"],
+        format_func=lambda v: t("居中") if v == "center" else t("居左"),
+        horizontal=True,
+        index=0 if st.session_state.get(f"images_align_{q_no}", "center") == "center" else 1,
+        key=f"images_align_{q_no}",
+        help=t("只在这一行只有一张图片时生效（比如「每行放几张」设成 1，或者最后一行只剩一张）；"
+            "同一行有好几张图片时始终靠左，不受这个设置影响。"),
     )
 
     for row_start in range(0, len(tiles), per_row):
-        row_tiles = tiles[row_start : row_start + per_row]
-        row_cols = st.columns(len(row_tiles))
-        for col, tile in zip(row_cols, row_tiles):
-            if tile["kind"] == "chart":
-                chart_png = _chart_snapshot_png(q_no, chart_kind, chart_stats_result)
-                col.image(chart_png, use_container_width=True)
-                col.caption(f"↑ {q_no} 的图表")
-            else:
-                col.image(tile["bytes"], use_container_width=True)
-                if tile["caption"]:
-                    col.caption(tile["caption"])
+        _render_tiles_row(tiles[row_start : row_start + per_row], single_image_align=align)
 
 
 def _render_open_answer_table(display_table: pd.DataFrame) -> None:
@@ -1262,7 +1514,7 @@ def _render_open_answer_table(display_table: pd.DataFrame) -> None:
     """
 
     columns = list(display_table.columns)
-    header_cells = "".join(f"<th>{html_lib.escape(str(c))}</th>" for c in columns)
+    header_cells = "".join(f"<th>{html_lib.escape(t(c) if c == '原文' else str(c))}</th>" for c in columns)
     body_rows = []
     for idx, row in zip(display_table.index, display_table.itertuples(index=False)):
         cells = "".join(
@@ -1288,7 +1540,7 @@ def render_unit(
     sec_units: list[dict] | None = None,
     unit_index: int | None = None,
 ) -> None:
-    """按题型渲染一个"题目单元"（单选/多选/开放/数值），section_df 已经是这一段该用的样本。
+    """按题型渲染一个"题目单元"（单选/多选/排序/开放/数值），section_df 已经是这一段该用的样本。
 
     sec_units/unit_index：开放题要在同一段里前后找候选关联题目才需要，其他题型用不上，
     默认 None 也不影响单选/多选/数值的渲染。
@@ -1299,9 +1551,6 @@ def render_unit(
     title = unit["title"]
     cols = unit["columns"]
 
-    chart_kind = None
-    chart_stats_result = None
-
     if kind == "single":
         col = cols[0]
         raw_result = stats.single_choice_stats(section_df[col])
@@ -1309,7 +1558,7 @@ def render_unit(
         with st.container(key=f"qbar_{q_no}"):
             header_col, insert_col, edit_col, copy_col, download_col = st.columns([8.5, 1, 1, 1, 1], gap=8)
             with header_col:
-                label_map, header_caption = render_question_header(q_no, title, "单选题", options)
+                label_map, header_caption = render_question_header(q_no, title, t("单选题"), options)
             display_result = relabel(raw_result, label_map)
             with edit_col:
                 display_result = render_label_override_editor(q_no, display_result)
@@ -1318,24 +1567,27 @@ def render_unit(
                 render_image_attachments_trigger(q_no)
         if header_caption:
             st.caption(header_caption)
+        # 插入的图片单独成一行，放在问题标题和下面的分析图表之间——真实反馈"插入的图片
+        # 不能和饼图/柱状图挤在同一行"，图表和图片本来就是两种不同性质的内容（图表是
+        # 算出来的分析结果，图片是用户自己找补充证据用的），混排在一起容易搞不清哪个
+        # 是哪个。图表因此也不用再在"交互图" vs "参与排版的静态截图"之间二选一了，
+        # 图表固定走交互式 ECharts 这条路，跟插入的图片互不干扰。
+        render_image_attachments_grid(q_no)
         chart_type = chart_spec.choose_chart_type("single", len(display_result))
-        config = chart_spec.build_chart_config(chart_type, display_result, "", f"n = {n_for_footer}", color_palette=_active_chart_palette())
-        if _should_render_interactive_chart(q_no):
-            render_chart(chart_type, config, key=f"chart_{q_no}")
-        else:
-            st.caption("这道题的图表已经放进下面的排版预览里了——把「插入图片」里「图表也放进排版」的勾去掉，可以换回上面这张交互图表。")
-        chart_kind, chart_stats_result = "single", display_result
+        config = chart_spec.build_chart_config(chart_type, display_result, "", t("n = {n}", n=n_for_footer), color_palette=_active_chart_palette())
+        render_chart(chart_type, config, key=f"chart_{q_no}")
 
     elif kind == "numeric":
         col = cols[0]
         with st.container(key=f"qbar_{q_no}"):
             header_col, insert_col = st.columns([11, 1])
             with header_col:
-                _, header_caption = render_question_header(q_no, title, "数值题", [])
+                _, header_caption = render_question_header(q_no, title, t("数值题"), [])
             with insert_col:
                 render_image_attachments_trigger(q_no)
         if header_caption:
             st.caption(header_caption)
+        render_image_attachments_grid(q_no)
         result = stats.numeric_stats(section_df[col])
         st.table(pd.DataFrame([result]))
 
@@ -1346,11 +1598,12 @@ def render_unit(
         with st.container(key=f"qbar_{q_no}"):
             header_col, insert_col, star_col = st.columns([9.5, 1, 2], gap=8)
             with header_col:
-                _, header_caption = render_question_header(q_no, title, "开放题", [])
+                _, header_caption = render_question_header(q_no, title, t("开放题"), [])
             with insert_col:
                 render_image_attachments_trigger(q_no)
         if header_caption:
             st.caption(header_caption)
+        render_image_attachments_grid(q_no)
 
         # 原来这里是 st.expander("", expanded=False)——单独占一整行、只有一个箭头，
         # 跟下面"+"关联展示选择器又是另一整行，看起来是两个莫名其妙的空盒子，外面
@@ -1365,7 +1618,7 @@ def render_unit(
         toggle_col, multiselect_col = st.columns([1, 11], gap=8)
         with toggle_col:
             toggle_icon = ":material/expand_less:" if st.session_state[show_raw_key] else ":material/expand_more:"
-            if st.button("", icon=toggle_icon, key=f"toggle_raw_{q_no}", help="展开/收起原始数据"):
+            if st.button("", icon=toggle_icon, key=f"toggle_raw_{q_no}", help=t("展开/收起原始数据")):
                 st.session_state[show_raw_key] = not st.session_state[show_raw_key]
                 st.rerun()
         with multiselect_col:
@@ -1393,9 +1646,10 @@ def render_unit(
                 for filter_col, (ctx_label, ctx_series) in zip(filter_cols, row_items):
                     options = ["（全部）"] + sorted(v for v in ctx_series.dropna().unique() if v != "")
                     picked = filter_col.selectbox(
-                        f"按「{ctx_label}」筛选",
+                        t("按「{question}」筛选", question=ctx_label),
                         options,
                         key=f"context_filter_{q_no}_{ctx_label}",
+                        format_func=lambda value: t(value) if value == "（全部）" else value,
                     )
                     if picked != "（全部）":
                         active_filters.append((ctx_label, picked))
@@ -1424,12 +1678,12 @@ def render_unit(
             render_open_ai_classify_trigger(q_no, filtered_series, filter_key=filter_key)
 
         if active_filters:
-            note = "、".join(f"「{label}」＝{value}" for label, value in active_filters)
-            st.write(f"当前只看 {note} 这部分：{len(filtered_series)} 人（这道题总共 {len(series)} 人填写）。")
+            note = t("、").join(t("「{label}」＝{value}", label=label, value=value) for label, value in active_filters)
+            st.write(t("当前只看 {filter} 这部分：{filtered} 人（这道题总共 {count} 人填写）。", filter=note, filtered=len(filtered_series), count=len(series)))
         else:
-            st.write(f"{len(series)}人填写了这题。")
+            st.write(t("{count}人填写了这题。", count=len(series)))
 
-        render_open_ai_classify_results(q_no, filtered_series, filter_key=filter_key)
+        render_open_ai_classify_results(q_no, filtered_series, filter_key=filter_key, title=title)
 
     elif kind == "multi":
         list_series = _multi_select_list_series(section_df, cols)
@@ -1438,7 +1692,7 @@ def render_unit(
         with st.container(key=f"qbar_{q_no}"):
             header_col, insert_col, edit_col, copy_col, download_col = st.columns([8.5, 1, 1, 1, 1], gap=8)
             with header_col:
-                zh_map, header_caption = render_question_header(q_no, title, "多选题", options)
+                zh_map, header_caption = render_question_header(q_no, title, t("多选题"), options)
             display_result = relabel(raw_result, zh_map)
             with edit_col:
                 display_result = render_label_override_editor(q_no, display_result)
@@ -1447,36 +1701,80 @@ def render_unit(
                 render_image_attachments_trigger(q_no)
         if header_caption:
             st.caption(header_caption)
-        config = chart_spec.build_chart_config("bar_h", display_result, "", f"n = {n_for_footer}", color_palette=_active_chart_palette())
-        if _should_render_interactive_chart(q_no):
-            render_chart("bar_h", config, key=f"chart_multi_{q_no}")
-        else:
-            st.caption("这道题的图表已经放进下面的排版预览里了——把「插入图片」里「图表也放进排版」的勾去掉，可以换回上面这张交互图表。")
-        chart_kind, chart_stats_result = "multi", display_result
+        render_image_attachments_grid(q_no)
+        config = chart_spec.build_chart_config("bar_h", display_result, "", t("n = {n}", n=n_for_footer), color_palette=_active_chart_palette())
+        render_chart("bar_h", config, key=f"chart_multi_{q_no}")
 
-    render_image_attachments_grid(q_no, chart_kind, chart_stats_result)
+    elif kind == "ranking":
+        max_rank = len(cols)
+        option_labels_raw = clean.option_labels_for_group(cols)
+        with st.container(key=f"qbar_{q_no}"):
+            header_col, insert_col = st.columns([11, 1])
+            with header_col:
+                label_map, header_caption = render_question_header(
+                    q_no, title, t("排序题"), list(option_labels_raw.values())
+                )
+            with insert_col:
+                render_image_attachments_trigger(q_no)
+        if header_caption:
+            st.caption(header_caption)
+        render_image_attachments_grid(q_no)
+
+        option_labels_display = {c: label_map.get(v, v) for c, v in option_labels_raw.items()}
+        for row_start in range(0, len(cols), 4):
+            row_cols_names = cols[row_start:row_start + 4]
+            row_st_cols = st.columns(len(row_cols_names))
+            for st_col, orig_col in zip(row_st_cols, row_cols_names):
+                option_label = option_labels_display[orig_col]
+                rank_stats = stats.ranking_option_stats(section_df, orig_col, max_rank)
+                rank_stats_display = [
+                    {**row, "option": t("第{rank}名", rank=row["option"])}
+                    for row in rank_stats
+                ]
+                config = chart_spec.build_chart_config(
+                    "pie", rank_stats_display, option_label, "",
+                    color_palette=_active_chart_palette(),
+                )
+                # 每个选项也要能一键复制/下载，跟单选/多选题图表一样——真实反馈"这几张
+                # 饼图也需要 copy/download"。原始列名可能带中文/换行/连字符（比如见数
+                # 那种"题干-选项"格式），直接拼进 st.container key 会破坏"st-key-..."
+                # CSS 选择器，所以跟 AI 分类结果那个 mini qbar 一样，只取列名的短哈希
+                # 拼一个安全的 id，不直接用原始列名。
+                save_id = f"{q_no}_{hashlib.md5(orig_col.encode()).hexdigest()[:8]}"
+                with st_col:
+                    with st.container(key=f"qbar_rank_{save_id}"):
+                        header_col, copy_col, download_col = st.columns([6, 1, 1], gap=8)
+                        with header_col:
+                            st.markdown(f"**{option_label}**")
+                        render_chart_save_controls(
+                            download_col, copy_col, save_id, "single", rank_stats_display, title,
+                            title_suffix=t("｜{option}", option=option_label),
+                        )
+                    render_chart("pie", config, key=f"chart_rank_{q_no}_{orig_col}")
+
+        st.table(stats.ranking_table(section_df, cols, option_labels_display, max_rank))
 
 
 def build_units(mapping: pd.DataFrame) -> list[dict]:
-    """把映射表拆成题目单元：单选/开放/数值一行一个单元；多选按"分组键"相同的行合并成一个单元。"""
+    """把映射表拆成题目单元：多选/排序按同题型、同分类和同分组键合并，其余一行一个单元。"""
 
     units: list[dict] = []
-    seen_multi_keys: set[tuple[str, str]] = set()
+    seen_group_keys: set[tuple[str, str, str]] = set()
     for _, row in mapping.iterrows():
         if row["q_type"] == "忽略":
             continue
-        if row["q_type"] == "multi":
-            group_key = (row["section"], row["q_no"])
-            if group_key in seen_multi_keys:
+        if row["q_type"] in ("multi", "ranking"):
+            group_key = (row["q_type"], row["section"], row["q_no"])
+            if group_key in seen_group_keys:
                 continue
-            seen_multi_keys.add(group_key)
+            seen_group_keys.add(group_key)
             cols = mapping[
-                (mapping["q_type"] == "multi")
+                (mapping["q_type"] == row["q_type"])
                 & (mapping["q_no"] == row["q_no"])
                 & (mapping["section"] == row["section"])
             ]["column"].tolist()
             units.append(
-                {"kind": "multi", "section": row["section"], "title": row["title"], "columns": cols}
+                {"kind": row["q_type"], "section": row["section"], "title": row["title"], "columns": cols}
             )
         else:
             units.append(
@@ -1519,12 +1817,15 @@ def _restore_extras(extras: dict) -> None:
     for q_no, imgs in extras.get("images", {}).items():
         restored = []
         for img in imgs:
+            # 旧数据（这次改动之前存的）可能还带着每张图各自的 "zoom" 字段——图片已经
+            # 不再各自调大小了，统一按基准高度对齐，这个字段读回来也没地方用，不用理它。
             content = base64.b64decode(img["bytes_b64"])
             restored.append(
                 {
                     "bytes": content,
                     "name": img["name"],
                     "caption": img.get("caption", ""),
+                    "mime": _image_mime(img),
                     "bytes_hash": hashlib.md5(content).hexdigest(),
                 }
             )
@@ -1533,8 +1834,12 @@ def _restore_extras(extras: dict) -> None:
     for q_no, per_row in extras.get("images_per_row", {}).items():
         st.session_state[f"images_per_row_{q_no}"] = per_row
 
-    for q_no, include_chart in extras.get("include_chart_in_grid", {}).items():
-        st.session_state[f"include_chart_in_grid_{q_no}"] = include_chart
+    for q_no, align in extras.get("images_align", {}).items():
+        st.session_state[f"images_align_{q_no}"] = align
+
+    # 旧数据（这次改动之前存的）可能还带着 "include_chart_in_grid" 这个字段——图表
+    # 已经不再参与图片排版了，这个字段读回来也没地方用，不用管它，`extras.get(...)`
+    # 直接不读这个 key 就行，字段留在旧记录里不会报错，也不影响其它内容加载。
 
     for q_no, overrides in extras.get("label_overrides", {}).items():
         st.session_state[f"label_overrides_{q_no}"] = dict(overrides)
@@ -1547,7 +1852,7 @@ def _restore_extras(extras: dict) -> None:
 # 上传/映射/生成分析这一整块——生成分析之前需要一直展开着方便配置，生成分析之后
 # 默认收起来（不是删掉，折叠状态下这里面的控件照样能用、照样能改，只是视觉上先让位
 # 给下面的分析结果，不用的话不用一直占着屏幕最上面的空间）。
-with st.expander("原始数据", expanded=not st.session_state.get("generated", False)):
+with st.expander(t("原始数据"), expanded=not st.session_state.get("generated", False)):
     # 从项目工作区点"打开"进来的历史分析——project_view.py 那边已经把
     # analysis_mode/current_document_id 写进 session_state 再跳转过来，这里接手。
     # 实际读库/灌回 session_state 只做一次（用 loaded_document_snapshot 这个 key 当
@@ -1574,19 +1879,19 @@ with st.expander("原始数据", expanded=not st.session_state.get("generated", 
             # 都要保留的基础设施 key，其余全部清空，重新从数据库加载的内容会重新把
             # 该有的 key 填回去。AI 供应商/API key 这些是存在数据库 settings 表里的
             # （见 _get_provider_or_none），不在 session_state 里，清空不会影响到。
-            keep_keys = {"db_conn", "analysis_mode", "current_document_id", "current_project_id"}
+            keep_keys = {"db_conn", "lang", "analysis_mode", "current_document_id", "current_project_id"}
             for key in list(st.session_state.keys()):
                 if key not in keep_keys:
                     del st.session_state[key]
 
             document_id = requested_document_id
             if document_id is None:
-                st.error("没有找到要加载的历史分析，请回到项目工作区重新选择。")
+                st.error(t("没有找到要加载的历史分析，请回到项目工作区重新选择。"))
                 st.stop()
             try:
                 loaded = persistence.load_analysis(_get_db_conn(), document_id)
             except Exception as exc:  # noqa: BLE001
-                st.error(f"加载历史分析失败：{exc}")
+                st.error(t("加载历史分析失败：{error}", error=exc))
                 st.stop()
 
             # 多选题现在存库时保留的是每个原始拆分列各自的真假值（见
@@ -1628,12 +1933,12 @@ with st.expander("原始数据", expanded=not st.session_state.get("generated", 
 
         df_all = st.session_state["loaded_document_snapshot"]["df_all"]
         id_col = "（不去重）"  # 历史记录里的数据已经是去重后的最终结果，不用再选一次
-        st.info(f"已从历史记录加载：{st.session_state.get('document_title', '')}（{len(df_all)} 人）")
+        st.info(t("已从历史记录加载：{title}（{total} 人）", title=st.session_state.get('document_title', ''), total=len(df_all)))
     else:
-        uploaded = st.file_uploader("上传问卷原始数据（CSV / xlsx）", type=["csv", "xlsx"])
+        uploaded = st.file_uploader(t("上传问卷原始数据（CSV / xlsx）"), type=["csv", "xlsx"])
 
         if uploaded is None:
-            st.info("上传一个文件开始。没有现成数据的话，随便导出一份 Qualtrics/问卷星/Google Forms 的 CSV 都行。")
+            st.info(t("上传一个文件开始。没有现成数据的话，随便导出一份 Qualtrics/问卷星/Google Forms 的 CSV 都行。"))
             st.stop()
 
         upload_dir = PROJECT_ROOT / "data" / "uploads"
@@ -1644,7 +1949,7 @@ with st.expander("原始数据", expanded=not st.session_state.get("generated", 
         try:
             raw_df = ingest.load_file(str(save_path))
         except Exception as exc:  # noqa: BLE001 - 展示给用户看，不静默
-            st.error(f"解析失败：{exc}")
+            st.error(t("解析失败：{error}", error=exc))
             st.stop()
 
         # 有些问卷平台（见数等）导出的 CSV 有两行表头：第一行是完整题目文本（已经被当列名用了），
@@ -1652,10 +1957,10 @@ with st.expander("原始数据", expanded=not st.session_state.get("generated", 
         # 表现出来就是某道题的分布里冒出一个奇怪的、n=1 的选项，值正好是字段代码或者一段 <img> 标签。
         raw_df, dropped_metadata_row = clean.drop_leading_metadata_row(raw_df)
         if dropped_metadata_row:
-            st.info("检测到并自动剔除了第一行——它看起来是问卷平台的字段代码行，不是真实作答（比如「作答ID」「Q1」这种），不算进统计。")
+            st.info(t("检测到并自动剔除了第一行——它看起来是问卷平台的字段代码行，不是真实作答（比如「作答ID」「Q1」这种），不算进统计。"))
 
-        st.success(f"读取成功：{len(raw_df)} 行 × {len(raw_df.columns)} 列")
-        with st.expander("预览原始数据（前 5 行）", expanded=False):
+        st.success(t("读取成功：{rows} 行 × {columns} 列", rows=len(raw_df), columns=len(raw_df.columns)))
+        with st.expander(t("预览原始数据（前 5 行）"), expanded=False):
             st.dataframe(raw_df.head())
 
         # ---------------------------------------------------------------------------
@@ -1663,8 +1968,9 @@ with st.expander("原始数据", expanded=not st.session_state.get("generated", 
         # ---------------------------------------------------------------------------
 
         id_col = st.selectbox(
-            "哪一列是受访者 ID？（用于去重，选'不去重'跳过）",
+            t("哪一列是受访者 ID？（用于去重，选'不去重'跳过）"),
             ["（不去重）"] + list(raw_df.columns),
+            format_func=lambda value: t(value) if value == "（不去重）" else value,
         )
         df_all = raw_df
         if id_col != "（不去重）":
@@ -1672,22 +1978,22 @@ with st.expander("原始数据", expanded=not st.session_state.get("generated", 
             df_all = clean.dedupe(df_all, id_col)
             dropped = before - len(df_all)
             if dropped:
-                st.warning(f"去重剔除了 {dropped} 行重复 {id_col}。")
+                st.warning(t("去重剔除了 {count} 行重复 {column}。", count=dropped, column=id_col))
 
     # ---------------------------------------------------------------------------
     # 3. 数据映射：题型 + 分类（筛选/正式/基础信息）+ 分组键
     # ---------------------------------------------------------------------------
 
-    st.subheader("数据映射", anchor="mapping-table")
+    st.subheader(t("数据映射"), anchor="mapping-table")
     st.caption(
-        "题型决定怎么统计和画图；「分类」决定这题算 3.筛选、4.正式问卷还是 5.基础信息——"
+        t("题型决定怎么统计和画图；「分类」决定这题算 3.筛选、4.正式问卷还是 5.基础信息——"
         "显示的题号（S1/Q1/C1…）由分类自动生成，不用手填。「分组键」只在多选题里有用："
-        "同一分类下分组键相同的几列会被合并成一道多选题。"
+        "同一分类下分组键相同的几列会被合并成一道多选题。")
     )
     st.caption(
-        "点了「生成分析」之后这张表还是可以改的，不用重新上传文件——比如自动识别的多选题"
+        t("点了「生成分析」之后这张表还是可以改的，不用重新上传文件——比如自动识别的多选题"
         "分组不对、某道题类型判断错了，直接在下面这张表里改对应的行，改完页面会立刻按新的"
-        "设置重新生成整份报告。侧边栏导航最上面「调整题型／分组」可以随时跳回这里。"
+        "设置重新生成整份报告。侧边栏导航最上面「调整题型／分组」可以随时跳回这里。")
     )
 
     if "mapping" not in st.session_state or list(st.session_state["mapping"]["column"]) != list(df_all.columns):
@@ -1695,11 +2001,22 @@ with st.expander("原始数据", expanded=not st.session_state.get("generated", 
         # 只要取值以布尔值为主就认），同一组的列默认打成 multi + 同一个分组键；Tally 那种额外
         # 带的"选项逗号拼接"汇总列默认忽略，不然会被当成一道假开放题重复分析。
         multi_groups, multi_summary_columns = clean.detect_multi_select_groups(df_all)
-        column_to_group: dict[str, tuple[str, str]] = {}  # column -> (分组键, 题干)
+        column_to_group: dict[str, tuple[str, str, str]] = {}  # column -> (分组键, 题干, 题型)
         for group_index, (prefix, option_columns) in enumerate(multi_groups.items(), start=1):
             group_key = f"auto_multi_{group_index}"
             for col in option_columns:
-                column_to_group[col] = (group_key, prefix)
+                column_to_group[col] = (group_key, prefix, "multi")
+
+        ranking_groups = clean.detect_ranking_groups(df_all)
+        ranking_groups = {
+            prefix: option_columns
+            for prefix, option_columns in ranking_groups.items()
+            if not any(col in column_to_group or col in multi_summary_columns for col in option_columns)
+        }
+        for group_index, (prefix, option_columns) in enumerate(ranking_groups.items(), start=1):
+            group_key = f"auto_rank_{group_index}"
+            for col in option_columns:
+                column_to_group[col] = (group_key, prefix, "ranking")
 
         default_rows = []
         for i, col in enumerate(df_all.columns):
@@ -1709,9 +2026,9 @@ with st.expander("原始数据", expanded=not st.session_state.get("generated", 
                 )
                 continue
             if col in column_to_group:
-                group_key, prefix = column_to_group[col]
+                group_key, prefix, group_type = column_to_group[col]
                 default_rows.append(
-                    {"column": col, "q_type": "multi", "section": "正式", "q_no": group_key, "title": prefix}
+                    {"column": col, "q_type": group_type, "section": "正式", "q_no": group_key, "title": prefix}
                 )
                 continue
             if guess_is_platform_column(col):
@@ -1738,24 +2055,82 @@ with st.expander("原始数据", expanded=not st.session_state.get("generated", 
                 }
             )
         st.session_state["mapping"] = pd.DataFrame(default_rows)
+        st.session_state["mapping_auto"] = st.session_state["mapping"].copy(deep=True)
+        st.session_state.pop("mapping_memory_report", None)
+        previous_mapping = mapping_memory.latest_project_mapping(
+            _get_db_conn(), st.session_state.get("current_project_id"),
+            st.session_state.get("current_document_id"),
+        )
+        if previous_mapping is not None:
+            remembered_mapping, report = mapping_memory.apply_template(
+                st.session_state["mapping"], previous_mapping["rows"]
+            )
+            if report["matched_count"]:
+                st.session_state["mapping"] = remembered_mapping
+                st.session_state["mapping_memory_report"] = {**report, "name": previous_mapping["name"]}
+                st.session_state.pop("mapping_editor", None)
         st.session_state["generated"] = False
         if multi_groups:
             st.info(
-                f"自动识别出 {len(multi_groups)} 道多选题（按选项列名规律+布尔取值判断），"
-                "已经在下面的映射表里合并成 multi 类型，不用手动一个个改分组键了；"
-                "不对的话可以在表格里直接调整。"
+                t("自动识别出 {count} 道多选题（按选项列名规律+布尔取值判断），已经在下面的映射表里合并成 multi 类型，不用手动一个个改分组键了；不对的话可以在表格里直接调整。", count=len(multi_groups))
             )
+        if ranking_groups:
+            st.info(
+                t("自动识别出 {count} 道排序题（按选项列名规律+名次取值判断），已经在下面的映射表里合并成 ranking 类型，不用手动一个个改分组键了；不对的话可以在表格里直接调整。", count=len(ranking_groups))
+            )
+
+    with st.expander(t("映射记忆"), expanded=False):
+        saved_templates = mapping_memory.list_templates(_get_db_conn())
+        if saved_templates:
+            templates_by_id = {item["id"]: item for item in saved_templates}
+            selected_template_id = st.selectbox(
+                t("已存模板"), list(templates_by_id), key="mapping_template_selection",
+                format_func=lambda template_id: f"{templates_by_id[template_id]['name']} (#{template_id})",
+            )
+            if st.button(t("套用模板"), key="mapping_template_apply"):
+                template_rows = mapping_memory.load_template(_get_db_conn(), selected_template_id)
+                if template_rows is not None:
+                    st.session_state.setdefault("mapping_auto", st.session_state["mapping"].copy(deep=True))
+                    st.session_state["mapping"], report = mapping_memory.apply_template(
+                        st.session_state["mapping"], template_rows
+                    )
+                    st.session_state["mapping_memory_report"] = {
+                        **report, "name": templates_by_id[selected_template_id]["name"],
+                    }
+                    st.session_state.pop("mapping_editor", None)
+            if st.button(t("删除模板"), key="mapping_template_delete"):
+                mapping_memory.delete_template(_get_db_conn(), selected_template_id)
+                st.rerun()
+        template_name = st.text_input(t("模板名称"), key="mapping_template_name")
+        if st.button(t("把当前映射存为模板"), key="mapping_template_save", disabled=not template_name.strip()):
+            mapping_memory.save_template(
+                _get_db_conn(), template_name, st.session_state["mapping"].to_dict("records")
+            )
+            st.rerun()
+
+    memory_report = st.session_state.get("mapping_memory_report")
+    if memory_report:
+        if st.button(t("撤销套用（恢复自动识别）"), key="mapping_template_undo"):
+            st.session_state["mapping"] = st.session_state["mapping_auto"].copy(deep=True)
+            st.session_state.pop("mapping_memory_report", None)
+            st.session_state.pop("mapping_editor", None)
+        else:
+            st.info(t(
+                "已按『{name}』套用 {matched}/{total} 列的映射，其余列为自动识别，可在下方修改",
+                name=memory_report["name"], matched=memory_report["matched_count"], total=memory_report["total_count"],
+            ))
 
     mapping = st.data_editor(
         st.session_state["mapping"],
         column_config={
-            "column": st.column_config.TextColumn("原始列名", disabled=True),
+            "column": st.column_config.TextColumn(t("原始列名"), disabled=True),
             "q_type": st.column_config.SelectboxColumn(
-                "题型", options=["single", "multi", "open", "numeric", "忽略"]
+                t("题型"), options=["single", "multi", "ranking", "open", "numeric", "忽略"],
+                format_func=lambda value: t(value) if value == "忽略" else value,
             ),
-            "section": st.column_config.SelectboxColumn("分类", options=ALL_SECTIONS),
-            "q_no": st.column_config.TextColumn("分组键（多选题共享同一个值才会合并）"),
-            "title": st.column_config.TextColumn("题目文本（英文原题，或已经是中文就直接填中文）"),
+            "section": st.column_config.SelectboxColumn(t("分类"), options=ALL_SECTIONS),
+            "q_no": st.column_config.TextColumn(t("分组键（多选题共享同一个值才会合并）")),
+            "title": st.column_config.TextColumn(t("题目文本（英文原题，或已经是中文就直接填中文）")),
         },
         hide_index=True,
         use_container_width=True,
@@ -1771,23 +2146,23 @@ with st.expander("原始数据", expanded=not st.session_state.get("generated", 
     screen_fail_values: dict[str, list[str]] = {}
 
     if not screen_rows.empty:
-        st.subheader("筛选设置")
-        st.caption("选中的值 = 未通过筛选（screen out）；不选就当这道题不参与过滤，只在「3. 筛选问题」里展示分布。")
+        st.subheader(t("筛选设置"))
+        st.caption(t("选中的值 = 未通过筛选（screen out）；不选就当这道题不参与过滤，只在「3. 筛选问题」里展示分布。"))
         for _, row in screen_rows.iterrows():
             col = row["column"]
             unique_values = sorted(df_all[col].dropna().unique().tolist(), key=str)
             screen_fail_values[col] = st.multiselect(
-                f"「{row['title']}」——哪些取值算未通过？", unique_values, key=f"screenfail_{col}"
+                t("「{title}」——哪些取值算未通过？", title=row['title']), unique_values, key=f"screenfail_{col}"
             )
 
     other_screen_rows = mapping[(mapping["section"] == "筛选") & (mapping["q_type"] != "single")]
     if not other_screen_rows.empty:
         st.info(
-            "以下筛选题不是单选题，本 demo 暂不支持据此过滤样本，只会在「3. 筛选问题」里展示，不影响「4. 正式问卷」「5. 基础信息探测」的有效样本："
-            + "、".join(other_screen_rows["title"].tolist())
+            t("以下筛选题不是单选题，本 demo 暂不支持据此过滤样本，只会在「3. 筛选问题」里展示，不影响「4. 正式问卷」「5. 基础信息探测」的有效样本：")
+            + t("、").join(other_screen_rows["title"].tolist())
         )
 
-    if st.button("生成分析", type="primary"):
+    if st.button(t("生成分析"), type="primary"):
         st.session_state["generated"] = True
 
     # 用 session_state 存"已经生成过"这件事，而不是直接判断按钮这次刷新的返回值——
@@ -1804,7 +2179,7 @@ with st.expander("原始数据", expanded=not st.session_state.get("generated", 
 # 收起箭头，两个功能重复，删掉自己这个，只留原生那个。"### 模块导航"这行标题文字
 # 也去掉了——链接列表本身就是导航，不需要额外一行字说明"这是导航"。
 for label, anchor in SIDEBAR_NAV:
-    st.sidebar.markdown(f"[{label}](#{anchor})")
+    st.sidebar.markdown(f"[{t(label)}](#{anchor})")
 
 # 有效样本：任一筛选题命中"未通过"取值，就整体剔除
 valid_mask = pd.Series(True, index=df_all.index)
@@ -1817,7 +2192,7 @@ for col, fail_values in screen_fail_values.items():
 df_valid = df_all[valid_mask]
 
 if screen_fail_values and any(screen_fail_values.values()):
-    st.info(f"筛选后：全量 {len(df_all)} 人 → 有效样本 {len(df_valid)} 人（剔除 {len(df_all) - len(df_valid)} 人）。")
+    st.info(t("筛选后：全量 {total} 人 → 有效样本 {valid} 人（剔除 {excluded} 人）。", total=len(df_all), valid=len(df_valid), excluded=len(df_all) - len(df_valid)))
 
 has_screening = bool(screen_fail_values) and any(screen_fail_values.values())
 
@@ -1829,8 +2204,8 @@ has_screening = bool(screen_fail_values) and any(screen_fail_values.values())
 # ---------------------------------------------------------------------------
 
 with st.container(key="section_paper_1"):
-    st.header("1. 结论", anchor="sec1")
-    st.caption("一句话最重要的结论，默认 1 条，带数字；可以再加。")
+    st.header(t("1. 结论"), anchor="sec1")
+    st.caption(t("一句话最重要的结论，默认 1 条，带数字；可以再加。"))
 
     if "conclusions" not in st.session_state:
         st.session_state["conclusions"] = [""]
@@ -1839,22 +2214,22 @@ with st.container(key="section_paper_1"):
         col_num, col_text, col_del = st.columns([0.6, 9.4, 1])
         col_num.markdown(f"**{i + 1}.**")
         st.session_state["conclusions"][i] = col_text.text_input(
-            f"结论 {i + 1}",
+            t("结论 {number}", number=i + 1),
             value=st.session_state["conclusions"][i],
             key=f"conclusion_input_{i}",
-            placeholder="例：179人中，选择最多的是「新西兰羊毛精工打造」，86人（48.0%）。",
+            placeholder=t("例：179人中，选择最多的是「新西兰羊毛精工打造」，86人（48.0%）。"),
             label_visibility="collapsed",
         )
-        if col_del.button("删除", key=f"conclusion_del_{i}") and len(st.session_state["conclusions"]) > 1:
+        if col_del.button(t("删除"), key=f"conclusion_del_{i}") and len(st.session_state["conclusions"]) > 1:
             st.session_state["conclusions"].pop(i)
             st.rerun()
 
-    if st.button("+ 新增一条结论", key="conclusion_add"):
+    if st.button(t("+ 新增一条结论"), key="conclusion_add"):
         st.session_state["conclusions"].append("")
         st.rerun()
 
 with st.container(key="section_paper_2"):
-    st.header("2. 测试方法", anchor="sec2")
+    st.header(t("2. 测试方法"), anchor="sec2")
 
     # setdefault 只在第一次创建时生效——(a) 的初始值用列名做一次启发式猜测（命中 Prolific/
     # Credamo/PickFu/Tally 等平台特征词就预填），猜完之后完全交给你编辑，不会每次刷新都被
@@ -1870,47 +2245,49 @@ with st.container(key="section_paper_2"):
         },
     )
     tm["platform_source"] = st.text_input(
-        "(a) 测试平台与样本来源（根据列名猜的，不准就自己改）",
+        t("(a) 测试平台与样本来源（根据列名猜的，不准就自己改）"),
         value=tm["platform_source"],
         key="tm_platform_source",
-        placeholder="如 Prolific + Tally / PickFu / Credamo 见数",
+        placeholder=t("如 Prolific + Tally / PickFu / Credamo 见数"),
     )
-    tm["is_branched"] = st.checkbox("(b) 是否有分流设计", value=tm["is_branched"], key="tm_is_branched")
+    tm["is_branched"] = st.checkbox(t("(b) 是否有分流设计"), value=tm["is_branched"], key="tm_is_branched")
     if tm["is_branched"]:
         tm["branch_count"] = st.number_input(
-            "分几份问卷", min_value=1, step=1, value=tm["branch_count"] or 1, key="tm_branch_count"
+            t("分几份问卷"), min_value=1, step=1, value=tm["branch_count"] or 1, key="tm_branch_count"
         )
         st.caption(
-            "这版 demo 一次只处理一份上传文件，没法从单个 CSV 自动判断是不是分流问卷，"
+            t("这版 demo 一次只处理一份上传文件，没法从单个 CSV 自动判断是不是分流问卷，"
             "这项只能你自己勾；分几份问卷各自的样本量需要分开上传后自己核对——"
-            "跨文件合并统计留给正式版（`engine/db.py` 已经有 `documents.branch_label` 字段接这个）。"
+            "跨文件合并统计留给正式版（`engine/db.py` 已经有 `documents.branch_label` 字段接这个）。")
         )
     else:
         tm["branch_count"] = None
 
-    sample_line = f"**(c) 样本量**：全量 {len(df_all)} 人"
+    sample_line = t("**(c) 样本量**：全量 {total} 人", total=len(df_all))
     if has_screening:
-        sample_line += f"，有效样本 {len(df_valid)} 人"
-    sample_line += "（自动统计，不用手填）"
+        sample_line += t("，有效样本 {valid} 人", valid=len(df_valid))
+    sample_line += t("（自动统计，不用手填）")
     st.markdown(sample_line)
 
     # (d) 筛选逻辑：不是一个可编辑输入框——直接从"筛选设置"步骤里你已经勾选的内容拼出来，
     # 全自动、不能手改（改的地方应该回"筛选设置"改，不是这里，两处不一致会更乱）。
     screen_rule_parts = []
+    screen_rule_display_parts = []
     for col, fail_values in screen_fail_values.items():
         if fail_values:
             col_title = mapping.loc[mapping["column"] == col, "title"].iloc[0]
             screen_rule_parts.append(f"「{col_title}」选中 {fail_values} 视为未通过")
+            screen_rule_display_parts.append(t("「{title}」选中 {values} 视为未通过", title=col_title, values=fail_values))
     tm["screen_out_rule"] = "；".join(screen_rule_parts) if screen_rule_parts else "无"
-    st.markdown(f"**(d) 筛选逻辑**：{tm['screen_out_rule']}（根据上面「筛选设置」自动生成，不用手填）")
+    st.markdown(t("**(d) 筛选逻辑**：{rule}（根据上面「筛选设置」自动生成，不用手填）", rule=t("；").join(screen_rule_display_parts) if screen_rule_display_parts else t("无")))
 
     # (e) 跳转逻辑没法从导出的平铺 CSV 里可靠推断（跳转是问卷设计时的分支规则，答题数据本身
     # 看不出"是因为跳转没看到题"还是"看到了但没填"），这项保留手填。
     tm["skip_logic_note"] = st.text_area(
-        "(e) 跳转逻辑（没法从数据自动判断，需要你回忆问卷设计手填）",
+        t("(e) 跳转逻辑（没法从数据自动判断，需要你回忆问卷设计手填）"),
         value=tm["skip_logic_note"],
         key="tm_skip_logic_note",
-        placeholder="没有就填「无」",
+        placeholder=t("没有就填「无」"),
     )
 
 # ---------------------------------------------------------------------------
@@ -1926,9 +2303,9 @@ for section in SECTION_ORDER:
 
     with st.container(key=f"section_paper_{section}"):
         section_df = df_all if section == "筛选" else df_valid
-        st.header(SECTION_HEADER[section], anchor=SECTION_ANCHOR[section])
+        st.header(t(SECTION_HEADER[section]), anchor=SECTION_ANCHOR[section])
         if section == "筛选":
-            st.caption("筛选题看的是筛选前的全量样本，不是有效样本——这道题本来就是拿来筛人的。")
+            st.caption(t("筛选题看的是筛选前的全量样本，不是有效样本——这道题本来就是拿来筛人的。"))
 
         for unit_index, unit in enumerate(sec_units):
             render_unit(unit, section_df, n_for_footer=len(section_df), sec_units=sec_units, unit_index=unit_index)
@@ -1945,8 +2322,8 @@ for section in SECTION_ORDER:
 from st_aggrid import AgGrid, GridOptionsBuilder  # noqa: E402  （延后 import，避免影响上面纯计算逻辑的可测性）
 
 with st.container(key="section_paper_6"):
-    st.header("6. 完整数据表格", anchor="sec6")
-    st.caption("只展示通过筛选的有效样本；点一行，下面「7. 受访者个人视角」会展开这个人的完整作答。")
+    st.header(t("6. 完整数据表格"), anchor="sec6")
+    st.caption(t("只展示通过筛选的有效样本；点一行，下面「7. 受访者个人视角」会展开这个人的完整作答。"))
 
     SECTION_HEADER_CLASS = {
         "筛选": "hdr-screen",
@@ -2013,7 +2390,7 @@ with st.container(key="section_paper_6"):
         ai_results: dict = {}
         images: dict = {}
         images_per_row: dict = {}
-        include_chart_in_grid: dict = {}
+        images_align: dict = {}
         label_overrides: dict = {}
         for u in units:
             q_no = u["display_no"]
@@ -2022,20 +2399,13 @@ with st.container(key="section_paper_6"):
                 ai_results[q_no] = ai_result_map
             imgs = st.session_state.get(f"images_{q_no}")
             if imgs:
-                images[q_no] = [
-                    {
-                        "name": img["name"],
-                        "caption": img["caption"],
-                        "bytes_b64": base64.b64encode(img["bytes"]).decode("ascii"),
-                    }
-                    for img in imgs
-                ]
+                images[q_no] = _images_payload(imgs)
             per_row = st.session_state.get(f"images_per_row_{q_no}")
             if per_row is not None:
                 images_per_row[q_no] = per_row
-            include_chart = st.session_state.get(f"include_chart_in_grid_{q_no}")
-            if include_chart is not None:
-                include_chart_in_grid[q_no] = include_chart
+            align = st.session_state.get(f"images_align_{q_no}")
+            if align is not None:
+                images_align[q_no] = align
             overrides = st.session_state.get(f"label_overrides_{q_no}")
             if overrides:
                 # 空字符串的覆盖值等于"没改"，不用存——存了也只是占地方，读回来也是
@@ -2047,7 +2417,7 @@ with st.container(key="section_paper_6"):
             "ai_results": ai_results,
             "images": images,
             "images_per_row": images_per_row,
-            "include_chart_in_grid": include_chart_in_grid,
+            "images_align": images_align,
             "label_overrides": label_overrides,
         }
 
@@ -2084,11 +2454,11 @@ with st.container(key="section_paper_6"):
                 if st.session_state.get(f"images_per_row_{u['display_no']}") is not None
             )
         )
-        include_chart_fp = tuple(
+        align_fp = tuple(
             sorted(
-                (u["display_no"], st.session_state[f"include_chart_in_grid_{u['display_no']}"])
+                (u["display_no"], st.session_state[f"images_align_{u['display_no']}"])
                 for u in units
-                if st.session_state.get(f"include_chart_in_grid_{u['display_no']}") is not None
+                if st.session_state.get(f"images_align_{u['display_no']}") is not None
             )
         )
         label_override_fp = tuple(
@@ -2098,7 +2468,7 @@ with st.container(key="section_paper_6"):
                 if st.session_state.get(f"label_overrides_{u['display_no']}")
             )
         )
-        return (ai_fp, image_fp, per_row_fp, include_chart_fp, label_override_fp)
+        return (ai_fp, image_fp, per_row_fp, align_fp, label_override_fp)
 
 
     def _save_snapshot() -> dict:
@@ -2122,7 +2492,7 @@ with st.container(key="section_paper_6"):
 
     with top_title_col:
         st.session_state["document_title"] = st.text_input(
-            "问卷标题",
+            t("问卷标题"),
             value=st.session_state["document_title"],
             key="document_title_input",
             label_visibility="collapsed",
@@ -2131,8 +2501,8 @@ with st.container(key="section_paper_6"):
         # 展示。放在标题正下方，跟标题共用同一个视觉分组；保存时间用真实墙钟时间，不是
         # _last_autosave_at 那个 monotonic 值（那个只用来算"距上次保存过了多久"，不能拿来显示）。
         saved_at = st.session_state.get("_last_saved_wallclock")
-        saved_label = f"更新于 {saved_at:%H:%M:%S}" if saved_at else "尚未保存"
-        st.caption(f"N = {len(df_all)}　·　{tm.get('platform_source') or '未识别来源'}　·　{saved_label}")
+        saved_label = t("更新于 {time:%H:%M:%S}", time=saved_at) if saved_at else t("尚未保存")
+        st.caption(t("N = {total}　·　{source}　·　{saved}", total=len(df_all), source=tm.get("platform_source") or t("未识别来源"), saved=saved_label))
 
 
     if "saved_document_id" not in st.session_state:
@@ -2168,15 +2538,15 @@ with st.container(key="section_paper_6"):
             st.session_state["_last_saved_snapshot"] = _save_snapshot()
             st.session_state["_last_autosave_at"] = time.monotonic()
             st.session_state["_last_saved_wallclock"] = datetime.now()
-            st.toast(f"已保存到数据库（document_id={document_id}）")
+            st.toast(t("已保存到数据库（document_id={document_id}）", document_id=document_id))
         except Exception as exc:  # noqa: BLE001 —— 保存失败不能挡住页面正常显示分析结果
-            st.warning(f"保存失败，不影响当前页面查看：{exc}")
+            st.warning(t("保存失败，不影响当前页面查看：{error}", error=exc))
     else:
         document_id = st.session_state["saved_document_id"]
         project_id = st.session_state.get("current_project_id")
 
         with top_save_col:
-            manual_save_clicked = st.button("保存", key="manual_save_button", type="primary")
+            manual_save_clicked = st.button(t("保存"), key="manual_save_button", type="primary")
 
         if manual_save_clicked:
             try:
@@ -2196,9 +2566,9 @@ with st.container(key="section_paper_6"):
                 st.session_state["_last_saved_snapshot"] = _save_snapshot()
                 st.session_state["_last_autosave_at"] = time.monotonic()
                 st.session_state["_last_saved_wallclock"] = datetime.now()
-                st.toast(f"已手动保存（{datetime.now():%H:%M:%S}），并清掉了这份问卷的自动保存草稿。")
+                st.toast(t("已手动保存（{time:%H:%M:%S}），并清掉了这份问卷的自动保存草稿。", time=datetime.now()))
             except Exception as exc:  # noqa: BLE001
-                st.toast(f"手动保存失败：{exc}")
+                st.toast(t("手动保存失败：{error}", error=exc))
         else:
             current_snapshot = _save_snapshot()
             changed = current_snapshot != st.session_state.get("_last_saved_snapshot")
@@ -2213,13 +2583,13 @@ with st.container(key="section_paper_6"):
                     st.session_state["_last_saved_snapshot"] = current_snapshot
                     st.session_state["_last_autosave_at"] = time.monotonic()
                     st.session_state["_last_saved_wallclock"] = datetime.now()
-                    st.toast(f"已自动保存草稿（{datetime.now():%H:%M:%S}）——不会覆盖手动保存，点「保存」才会写入正式数据。")
+                    st.toast(t("已自动保存草稿（{time:%H:%M:%S}）——不会覆盖手动保存，点「保存」才会写入正式数据。", time=datetime.now()))
                 except Exception as exc:  # noqa: BLE001
-                    st.toast(f"自动保存草稿失败：{exc}")
+                    st.toast(t("自动保存草稿失败：{error}", error=exc))
 
     show_platform = False
     if raw_table_units["平台信息"]:
-        show_platform = st.checkbox("显示平台信息列（10. 受访者信息，默认隐藏）", value=False, key="show_platform_cols")
+        show_platform = st.checkbox(t("显示平台信息列（10. 受访者信息，默认隐藏）"), value=False, key="show_platform_cols")
 
     if id_col != "（不去重）":
         id_series = df_valid[id_col].astype(str)
@@ -2244,13 +2614,13 @@ with st.container(key="section_paper_6"):
                 table_df[colname] = df_valid[u["columns"][0]].values
             children.append({"field": colname})
         column_groups.append(
-            {"headerName": SECTION_HEADER[section], "headerClass": SECTION_HEADER_CLASS[section], "children": children}
+            {"headerName": t(SECTION_HEADER[section]), "headerClass": SECTION_HEADER_CLASS[section], "children": children}
         )
 
     use_set_filter = st.checkbox(
-        "按具体取值筛选（勾选框选答案，需要 ag-Grid 企业版 Set Filter，没有授权会在表格上出现"
+        t("按具体取值筛选（勾选框选答案，需要 ag-Grid 企业版 Set Filter，没有授权会在表格上出现"
         "「For Trial Use Only」水印——内部用可以接受就勾；不勾的话用免费版的文本筛选，"
-        "点表头筛选图标、输入关键字也能缩小范围，只是不是勾选框）",
+        "点表头筛选图标、输入关键字也能缩小范围，只是不是勾选框）"),
         value=False,
         key="raw_grid_use_set_filter",
     )
@@ -2260,7 +2630,7 @@ with st.container(key="section_paper_6"):
     gb.configure_selection(selection_mode="single")
     gb.configure_default_column(filter=filter_type, floatingFilter=True, sortable=True, resizable=True)
     grid_options = gb.build()
-    grid_options["columnDefs"] = [{"field": "受访者ID", "pinned": "left", "filter": filter_type}] + column_groups
+    grid_options["columnDefs"] = [{"field": "受访者ID", "headerName": t("受访者ID"), "pinned": "left", "filter": filter_type}] + column_groups
 
     custom_css = {f".{cls}": {"background-color": f"{color} !important"} for cls, color in zip(
         SECTION_HEADER_CLASS.values(), SECTION_BG_COLOR.values()
@@ -2295,7 +2665,7 @@ with st.container(key="section_paper_6"):
     )
 
 with st.container(key="section_paper_7"):
-    st.header("7. 受访者个人视角", anchor="sec7")
+    st.header(t("7. 受访者个人视角"), anchor="sec7")
 
     selected = grid_response.selected_rows
     has_selection = selected is not None and (
@@ -2303,11 +2673,11 @@ with st.container(key="section_paper_7"):
     )
 
     if not has_selection:
-        st.info("在上面表格里点一行，这里会展开这个人的完整作答。")
+        st.info(t("在上面表格里点一行，这里会展开这个人的完整作答。"))
     else:
         row = selected.iloc[0] if hasattr(selected, "iloc") else selected[0]
         respondent_id = row["受访者ID"]
-        st.markdown(f"**受访者：{respondent_id}**")
+        st.markdown(t("**受访者：{respondent_id}**", respondent_id=respondent_id))
 
         # 用"受访者ID"字符串匹配去 df_valid 里找这一行，不用 ag-Grid 返回的行位置/索引——
         # ag-Grid 把数据序列化给前端再传回来，不一定保得住 pandas 原来的 index，只有实际
@@ -2322,7 +2692,7 @@ with st.container(key="section_paper_7"):
             parts = []
             for u in platform_units:
                 value = df_valid.loc[match_idx, u["columns"][0]]
-                parts.append(f"{u['title']}：{value if pd.notna(value) else '—'}")
+                parts.append(t("{label}：{value}", label=u["title"], value=value if pd.notna(value) else "—"))
             st.caption("　".join(parts))
 
         # ⑦ 剩下的部分顺序是"筛选→基础信息→正式"，跟整体页面顺序（③④⑤=筛选→正式→基础信息）不一样——
@@ -2331,7 +2701,7 @@ with st.container(key="section_paper_7"):
             sec_units = raw_table_units[section]
             if not sec_units:
                 continue
-            st.subheader(SECTION_HEADER[section])
+            st.subheader(t(SECTION_HEADER[section]))
             for u in sec_units:
                 colname = f"{u['display_no']}｜{u['title']}"
                 value = row[colname]
@@ -2345,7 +2715,7 @@ with st.container(key="section_paper_7"):
                 question_line = f"{u['display_no']}. {title_zh}"
                 # 问题单独一行，答案另起一行——不要挤在同一行里，长题目+长答案挤一起很难读。
                 st.markdown(f"**{question_line}**")
-                st.write(value if pd.notna(value) and value != "" else "（未作答/未看到这题）")
+                st.write(value if pd.notna(value) and value != "" else t("（未作答/未看到这题）"))
                 st.write("")
 
 # ---------------------------------------------------------------------------
@@ -2359,8 +2729,8 @@ with st.container(key="section_paper_7"):
 # ---------------------------------------------------------------------------
 
 with st.container(key="section_paper_8"):
-    st.header("8. 交叉分析", anchor="sec8")
-    st.caption("手动配置，不预设。维度数量不限——默认每个选项各自一组，可以合并/改名/增删。「对比到哪道题」单选、多选题都支持。")
+    st.header(t("8. 交叉分析"), anchor="sec8")
+    st.caption(t("手动配置，不预设。维度数量不限——默认每个选项各自一组，可以合并/改名/增删。「对比到哪道题」单选、多选题都支持。"))
 
     from_options = {
         f"{u['display_no']}｜{u['title']}": u
@@ -2376,9 +2746,9 @@ with st.container(key="section_paper_8"):
     }
 
     if not from_options or not to_options:
-        st.info("至少需要两道单选/多选题（一道用来圈人群，一道用来对比），才能配置交叉分析。")
+        st.info(t("至少需要两道单选/多选题（一道用来圈人群，一道用来对比），才能配置交叉分析。"))
     else:
-        from_key = st.selectbox("1. 从哪道题圈人群", list(from_options.keys()), key="crosstab_from")
+        from_key = st.selectbox(t("1. 从哪道题圈人群"), list(from_options.keys()), key="crosstab_from")
         from_unit = from_options[from_key]
 
         from_list_series = None
@@ -2393,50 +2763,50 @@ with st.container(key="section_paper_8"):
         if groups_key not in st.session_state:
             st.session_state[groups_key] = [{"name": v, "values": [v]} for v in candidate_values]
 
-        st.markdown("2. 配置对比维度")
+        st.markdown(t("2. 配置对比维度"))
         groups = st.session_state[groups_key]
         # 每一行的输入框标签都隐藏了（label_visibility="collapsed"，是为了不在每一行都
         # 重复"维度名／包含取值"这种大家已经知道意思的文字），但一整列都不显示是什么，
         # 只看默认填的选项文字容易看不出这两列到底是干嘛的——加一行可见的列标题，只显示
         # 一次，不用每行都重复。
         header_name_col, header_values_col, _ = st.columns([3, 6, 1])
-        header_name_col.caption("维度名称")
-        header_values_col.caption("包含哪些取值")
+        header_name_col.caption(t("维度名称"))
+        header_values_col.caption(t("包含哪些取值"))
         delete_index = None
         for gi, group in enumerate(groups):
             name_col, values_col, del_col = st.columns([3, 6, 1])
             group["name"] = name_col.text_input(
-                f"维度名 {gi}", value=group["name"], key=f"{groups_key}_name_{gi}", label_visibility="collapsed"
+                t("维度名 {index}", index=gi), value=group["name"], key=f"{groups_key}_name_{gi}", label_visibility="collapsed"
             )
             group["values"] = values_col.multiselect(
-                f"包含取值 {gi}",
+                t("包含取值 {index}", index=gi),
                 candidate_values,
                 default=[v for v in group["values"] if v in candidate_values],
                 key=f"{groups_key}_values_{gi}",
                 label_visibility="collapsed",
             )
-            if del_col.button("删除", key=f"{groups_key}_del_{gi}"):
+            if del_col.button(t("删除"), key=f"{groups_key}_del_{gi}"):
                 delete_index = gi
         if delete_index is not None:
             groups.pop(delete_index)
             st.rerun()
 
         btn_col1, btn_col2, _ = st.columns([1, 1, 4])
-        if btn_col1.button("+ 新增维度", key=f"{groups_key}_add"):
+        if btn_col1.button(t("+ 新增维度"), key=f"{groups_key}_add"):
             groups.append({"name": f"维度{len(groups) + 1}", "values": []})
             st.rerun()
-        if btn_col2.button("按选项重置", key=f"{groups_key}_reset"):
+        if btn_col2.button(t("按选项重置"), key=f"{groups_key}_reset"):
             st.session_state[groups_key] = [{"name": v, "values": [v]} for v in candidate_values]
             st.rerun()
 
-        include_rest = st.checkbox("把没被任何维度覆盖的人另算一个「其余」维度", key=f"{groups_key}_rest")
+        include_rest = st.checkbox(t("把没被任何维度覆盖的人另算一个「其余」维度"), key=f"{groups_key}_rest")
 
-        to_key = st.selectbox("3. 对比到哪道题", list(to_options.keys()), key="crosstab_to")
+        to_key = st.selectbox(t("3. 对比到哪道题"), list(to_options.keys()), key="crosstab_to")
         to_unit = to_options[to_key]
 
         valid_groups = [g for g in groups if g["values"] and g["name"].strip()]
 
-        if valid_groups and st.button("生成交叉分析", key="crosstab_run"):
+        if valid_groups and st.button(t("生成交叉分析"), key="crosstab_run"):
             source_series = df_valid[from_unit["columns"][0]] if from_unit["kind"] == "single" else from_list_series
 
             def assign_group(raw_value):
@@ -2480,8 +2850,11 @@ with st.container(key="section_paper_8"):
                 crosstab_input, "分组", "对比题答案", group_order=group_order, group_totals=group_totals
             )
             crosstab_title = f"{from_key} 按 {len(valid_groups)} 个维度分组，对比 {to_key} 上的分布"
-            st.markdown(f"**{crosstab_title}**")
-            st.dataframe(result_table)
+            st.markdown(t("**{source} 按 {count} 个维度分组，对比 {target} 上的分布**", source=from_key, count=len(valid_groups), target=to_key))
+            display_result_table = result_table.rename_axis(index=t("对比题答案"), columns=t("分组"))
+            if include_rest and "其余" not in [g["name"] for g in valid_groups]:
+                display_result_table = display_result_table.rename(columns={"其余": t("其余")})
+            st.dataframe(display_result_table)
 
             # 这张表算完就是个局部变量，下一次脚本重跑（比如切到⑪点"生成 Word 报告"）就
             # 没了——存进 session_state，导出 Word 的时候才有得取。按标题去重：同一组
@@ -2494,10 +2867,10 @@ with st.container(key="section_paper_8"):
 # ---------------------------------------------------------------------------
 
 with st.container(key="section_paper_9"):
-    st.header("9. AI 洞察", anchor="sec9")
-    st.caption("不自动生成。点下面按钮才会调用 AI；引用了编造数字的洞察会被整条丢弃，不会显示出来。")
+    st.header(t("9. AI 洞察"), anchor="sec9")
+    st.caption(t("不自动生成。点下面按钮才会调用 AI；引用了编造数字的洞察会被整条丢弃，不会显示出来。"))
 
-    if st.button("生成 AI 洞察", key="run_insight"):
+    if st.button(t("生成 AI 洞察"), key="run_insight"):
         provider = _get_provider_or_none()
         if provider is None:
             st.warning(provider_error_message())
@@ -2513,16 +2886,16 @@ with st.container(key="section_paper_9"):
                         list_series = _multi_select_list_series(df_valid, u["columns"])
                         bundle[u["display_no"]] = stats.multi_choice_stats(list_series)
             try:
-                with st.spinner("生成中…"):
+                with st.spinner(t("生成中…")):
                     insights = ai_insight.generate_insights(provider, bundle)
             except Exception as exc:  # noqa: BLE001
-                st.error(f"AI 调用失败：{exc}")
+                st.error(t("AI 调用失败：{error}", error=exc))
             else:
                 st.session_state["ai_insights"] = insights
 
     if "ai_insights" in st.session_state:
         if not st.session_state["ai_insights"]:
-            st.info("这次没有生成出数字能对上的洞察（可能是模型输出没通过校验），可以重新点一次试试。")
+            st.info(t("这次没有生成出数字能对上的洞察（可能是模型输出没通过校验），可以重新点一次试试。"))
         else:
             for item in st.session_state["ai_insights"]:
                 st.markdown(f"- {item['text']}")
@@ -2537,20 +2910,20 @@ with st.container(key="section_paper_9"):
 # ---------------------------------------------------------------------------
 
 with st.container(key="section_paper_10"):
-    st.header("10. 受访者信息", anchor="sec10")
+    st.header(t("10. 受访者信息"), anchor="sec10")
 
     platform_units_all = raw_table_units.get("平台信息", [])
     if not platform_units_all:
-        st.info("没有列被标成「平台信息」——如果你的数据里有 ID/提交时间这类平台自动收录的字段，去上面「数据映射」表里把对应行的「分类」改成「平台信息」。")
+        st.info(t("没有列被标成「平台信息」——如果你的数据里有 ID/提交时间这类平台自动收录的字段，去上面「数据映射」表里把对应行的「分类」改成「平台信息」。"))
     else:
         platform_table = pd.DataFrame({"受访者ID": id_series.values}, index=df_valid.index)
         for u in platform_units_all:
             platform_table[f"{u['display_no']}｜{u['title']}"] = df_valid[u["columns"][0]].values
-        st.caption("如实展示，不聚合、不加工。")
-        st.dataframe(platform_table, use_container_width=True)
+        st.caption(t("如实展示，不聚合、不加工。"))
+        st.dataframe(platform_table, column_config={"受访者ID": t("受访者ID")}, use_container_width=True)
 
 # ---------------------------------------------------------------------------
-# 11. ⑪ 导出 Word——把①②④⑤（正式问卷+基础信息，筛选题不导出，跟 export_word 模块的
+# 11. ⑪ 导出——把①②④⑤（正式问卷+基础信息，筛选题不导出，跟 export_word 模块的
 #    既定规则一致）+⑨AI洞察 导出成一份 Word 文档。范围说明：
 #    - 开放题的"中文翻译"是导出这一步现场调用 AI 逐条翻译的（按需触发，不是页面浏览时就
 #      翻译好的——那是另一件事，是题目标题/选项的翻译，不是受访者原始作答的翻译）。
@@ -2559,10 +2932,10 @@ with st.container(key="section_paper_10"):
 # ---------------------------------------------------------------------------
 
 with st.container(key="section_paper_11"):
-    st.header("11. 导出 Word", anchor="sec11")
-    st.caption("导出 1/2/4/5 + 9（筛选题、6/7/8/10 不导出——那些是网页交互功能，静态 Word 文档没有对应的东西）。")
+    st.header(t("11. 导出"), anchor="sec11")
+    st.caption(t("导出 1/2/4/5 + 9（筛选题、6/7/8/10 不导出——那些是网页交互功能，静态 Word 文档没有对应的东西）。"))
 
-    if st.button("生成 Word 报告", type="primary", key="export_word_button"):
+    if st.button(t("生成报告（Word / PDF / Markdown）"), type="primary", key="export_word_button"):
         # 开放题逐条翻译走"翻译专用"供应商（默认更便宜），跟题目/选项翻译用的是同一个设置，
         # 不是导出这里另外单独配一份。
         export_provider = _get_provider_or_none(purpose="translation")
@@ -2590,6 +2963,15 @@ with st.container(key="section_paper_11"):
                 label_map, title_zh, _ = _compute_label_map(unit["title"], [r["option"] for r in raw_result])
                 stats_by_unit[display_no] = relabel(raw_result, label_map)
                 title_zh_by_unit[display_no] = title_zh
+            elif kind == "ranking":
+                max_rank = len(unit["columns"])
+                option_labels_raw = clean.option_labels_for_group(unit["columns"])
+                label_map, title_zh, _ = _compute_label_map(unit["title"], list(option_labels_raw.values()))
+                option_labels_display = {c: label_map.get(v, v) for c, v in option_labels_raw.items()}
+                stats_by_unit[display_no] = {
+                    "table": stats.ranking_table(df_valid, unit["columns"], option_labels_display, max_rank),
+                }
+                title_zh_by_unit[display_no] = title_zh
             elif kind == "numeric":
                 stats_by_unit[display_no] = stats.numeric_stats(df_valid[unit["columns"][0]])
                 _, title_zh, _ = _compute_label_map(unit["title"], [])
@@ -2602,11 +2984,11 @@ with st.container(key="section_paper_11"):
                 if export_provider is not None and len(series) > 0:
                     items = [{"response_id": i, "text_en": str(text)} for i, text in enumerate(series)]
                     try:
-                        with st.spinner(f"翻译 {display_no} 的开放题原文中…"):
+                        with st.spinner(t("翻译 {question} 的开放题原文中…", question=display_no)):
                             results = ai_translate.translate_verbatims(export_provider, items, protected_terms=[])
                         translations = {r["response_id"]: r["translation"] for r in results}
                     except Exception as exc:  # noqa: BLE001
-                        st.warning(f"{display_no} 的开放题翻译失败（{exc}），Word 里这道题的中文翻译列会留空。")
+                        st.warning(t("{question} 的开放题翻译失败（{error}），Word 里这道题的中文翻译列会留空。", question=display_no, error=exc))
 
                 # 跟正文页面用的是同一份"关联题目"选择（session_state 里的 context_link_<题号>），
                 # 不是导出这里单独再选一遍——页面上点了关联什么，导出的 Word 表格里"对应选择"
@@ -2625,11 +3007,11 @@ with st.container(key="section_paper_11"):
                     context_labels = []
                     for pos in range(len(series)):
                         parts = [
-                            f"{label}：{cs.iloc[pos]}"
+                            t("{label}：{value}", label=label, value=cs.iloc[pos])
                             for label, cs in context_series_list
                             if pd.notna(cs.iloc[pos]) and cs.iloc[pos] != ""
                         ]
-                        context_labels.append("；".join(parts) or None)
+                        context_labels.append(t("；").join(parts) or None)
                 else:
                     context_labels = [None] * len(series)
 
@@ -2642,12 +3024,14 @@ with st.container(key="section_paper_11"):
                     for i, text in enumerate(series)
                 ]
 
-        project_name = "问卷分析"
+        project_name = "问卷分析"  # 文件名仍使用原始缺省值
+        project_display_name = t("问卷分析")
         project_id = st.session_state.get("current_project_id")
         if project_id is not None:
             row = _get_db_conn().execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()
             if row:
                 project_name = row["name"]
+                project_display_name = project_name
 
         export_dir = PROJECT_ROOT / "data" / "exports"
         export_dir.mkdir(parents=True, exist_ok=True)
@@ -2672,9 +3056,12 @@ with st.container(key="section_paper_11"):
         try:
             export_word.export_analysis_to_docx(
                 str(export_path),
-                project_name=project_name,
+                project_name=project_display_name,
                 conclusions=[c for c in st.session_state.get("conclusions", []) if c],
-                test_method=tm,
+                test_method={
+                    **tm,
+                    "screen_out_rule": t("；").join(screen_rule_display_parts) if screen_rule_display_parts else t("无"),
+                },
                 units=export_units,
                 stats_by_unit=stats_by_unit,
                 n_by_unit=n_by_unit,
@@ -2683,13 +3070,41 @@ with st.container(key="section_paper_11"):
                 color_palette=_active_chart_palette(),
             )
         except Exception as exc:  # noqa: BLE001
-            st.error(f"导出失败：{exc}")
+            st.error(t("导出失败：{error}", error=exc))
         else:
-            st.success(f"已生成：{export_filename}")
-            with open(export_path, "rb") as f:
+            st.success(t("已生成：{filename}", filename=export_filename))
+            pdf_path = markdown_path = None
+            try:
+                pdf_path = Path(export_pdf.convert_docx_to_pdf(str(export_path), str(export_dir)))
+                pdf_data = pdf_path.read_bytes()
+            except Exception as exc:  # noqa: BLE001
+                pdf_path = None
+                st.caption(t("未生成 PDF：{error}", error=exc))
+            try:
+                markdown_path = Path(export_markdown.convert_docx_to_markdown(str(export_path), str(export_dir)))
+                markdown_data = markdown_path.read_bytes()
+            except Exception as exc:  # noqa: BLE001
+                markdown_path = None
+                st.caption(t("未生成 Markdown：{error}", error=exc))
+
+            word_col, pdf_col, markdown_col = st.columns(3)
+            with word_col:
                 st.download_button(
-                    "下载 Word 文件",
-                    f.read(),
+                    t("下载 Word 文件"),
+                    export_path.read_bytes(),
                     file_name=export_filename,
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    on_click="ignore",
                 )
+            if pdf_path is not None:
+                with pdf_col:
+                    st.download_button(
+                        t("下载 PDF 文件"), pdf_data,
+                        file_name=pdf_path.name, mime="application/pdf", on_click="ignore",
+                    )
+            if markdown_path is not None:
+                with markdown_col:
+                    st.download_button(
+                        t("下载 Markdown 文件（含图片，zip）"), markdown_data,
+                        file_name=markdown_path.name, mime="application/zip", on_click="ignore",
+                    )

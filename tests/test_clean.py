@@ -1,9 +1,11 @@
 import pandas as pd
+import pytest
 
 from engine.clean import (
     apply_screen_out,
     dedupe,
     detect_multi_select_groups,
+    detect_ranking_groups,
     drop_leading_metadata_row,
     looks_like_metadata_row,
     looks_like_reason_followup_question,
@@ -12,6 +14,48 @@ from engine.clean import (
     option_labels_for_group,
     summarize_dropouts,
 )
+
+
+def test_detect_ranking_groups_credamo_and_mixed_multi():
+    title = "__TEST__以下几种材料是地毯背面的防滑点，\n请按价值感从高到低排序"
+    columns = [f"{title}-{option}" for option in ("硅基", "铂金硅", "液态硅", "弹性硅")]
+    df = pd.DataFrame([["1", "2", "3", "4"], ["4", "3", "1", "2"]], columns=columns)
+    df["__TEST__多选-A"] = [True, False]
+    df["__TEST__多选-B"] = [False, True]
+    assert detect_ranking_groups(df) == {title: columns}
+    assert detect_multi_select_groups(df) == (
+        {"__TEST__多选": ["__TEST__多选-A", "__TEST__多选-B"]}, set()
+    )
+
+
+@pytest.mark.parametrize("values", [
+    [[1], [1]],
+    [["1", "bad"]],
+    [[0, 2]],
+    [[1, 3]],
+    [[1.5, 2]],
+    [[float("inf"), 2]],
+    [[5, 5, 5, 5, 5]],
+    [[1, 1], [2, 2]],
+    [[None, None]],
+    [],
+])
+def test_detect_ranking_groups_rejects_invalid_or_rating_matrix(values):
+    size = len(values[0]) if values else 2
+    df = pd.DataFrame(values, columns=[f"__TEST__题干-{i}" for i in range(size)])
+    assert detect_ranking_groups(df) == {}
+
+
+@pytest.mark.parametrize("complete_count,expected", [(9, True), (8, False)])
+def test_detect_ranking_groups_90_percent_of_answered_rows(complete_count, expected):
+    columns = ["__TEST__Rank (A)", "__TEST__Rank (B)"]
+    df = pd.DataFrame(
+        [["1", "2"]] * complete_count
+        + [["1", None]] * (10 - complete_count)
+        + [[None, None]] * 20,
+        columns=columns,
+    )
+    assert detect_ranking_groups(df) == ({"__TEST__Rank": columns} if expected else {})
 
 
 def test_dedupe_keeps_first_respondent_row():
