@@ -25,3 +25,10 @@ __pycache__/
 verify_streamlit_render.py
 resume-claude-code.md
 路线图.md
+
+# 内部团队版专用的共享 API key（真实凭据，绝对不能进公开仓库的 git 历史）——这个
+# 文件只应该存在于私有仓库 QueryStats-Tool-Internal 的 internal 分支上，那边的
+# .gitignore 不会排除它（各分支的 .gitignore 内容本身也是可以不一样的）。这里排除
+# 是防止本地切分支时残留的文件被 `git add -A` 误提交进这个公开仓库，不是"这个文件
+# 不重要"的意思——见 engine/internal_defaults.py 文件头的完整说明。
+engine/internal_defaults.py
