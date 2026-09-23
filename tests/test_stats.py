@@ -187,3 +187,93 @@ def test_crosstab_counts_without_group_totals_keeps_old_default_behavior():
 
     assert result.loc["Yes", "A"] == "1人（50.0%）"
     assert result.loc["Yes", "B"] == "1人（100.0%）"
+
+
+def test_compare_choice_union_missing_options_and_preserved_labels():
+    from engine.stats import compare_choice_stats
+
+    a = single_choice_stats(pd.Series(['A', 'A', 'B']))
+    b = single_choice_stats(pd.Series(['B', 'C', 'C', 'C']))
+    table = compare_choice_stats(a, b, '版本一', '版本二')
+    assert table.columns.tolist() == ['版本一', '版本二', '差值']
+    assert table.index.tolist() == ['A', 'B', 'C']
+    assert table.values.tolist() == [
+        [format_count_pct(2, 3), format_count_pct(0, 0), '-66.7pp'],
+        [format_count_pct(1, 3), format_count_pct(1, 4), '-8.3pp'],
+        [format_count_pct(0, 0), format_count_pct(3, 4), '+75.0pp'],
+    ]
+
+
+def test_compare_choice_multi_uses_respondents_not_sum_of_counts():
+    from engine.stats import compare_choice_stats
+
+    a = multi_choice_stats(pd.Series([['A', 'B'], ['A']]))
+    b = multi_choice_stats(pd.Series([['A', 'B'], ['A', 'B'], []]))
+    table = compare_choice_stats(a, b, 'a', 'b')
+    assert table.loc['A'].tolist() == [format_count_pct(2, 2), format_count_pct(2, 3), '-33.3pp']
+    assert table.loc['B'].tolist() == [format_count_pct(1, 2), format_count_pct(2, 3), '+16.7pp']
+
+
+def test_compare_choice_rounding_zero_and_empty_inputs():
+    from engine.stats import compare_choice_stats
+
+    a = [{'option': 'A', 'n': 1, 'pct': 12.34, 'count_pct_label': 'original label'}]
+    b = [{'option': 'A', 'n': 2, 'pct': 24.67, 'count_pct_label': 'other label'}]
+    assert compare_choice_stats(a, b, 'a', 'b').loc['A'].tolist() == ['original label', 'other label', '+12.3pp']
+    assert compare_choice_stats(b, a, 'a', 'b').loc['A', '差值'] == '-12.3pp'
+    assert compare_choice_stats(a, a, 'a', 'b').loc['A', '差值'] == '0.0pp'
+    assert compare_choice_stats([], a, 'a', 'b').loc['A', 'a'] == format_count_pct(0, 0)
+    assert compare_choice_stats(a, [], 'a', 'b').loc['A', 'b'] == format_count_pct(0, 0)
+    empty = compare_choice_stats([], [], 'a', 'b')
+    assert empty.empty and empty.columns.tolist() == ['a', 'b', '差值']
+
+
+def test_compare_numeric_only_mean_has_difference():
+    from engine.stats import compare_numeric_stats
+
+    a = numeric_stats(pd.Series([1, 2, 4, None]))
+    b = numeric_stats(pd.Series([3, 4, 6, 7]))
+    table = compare_numeric_stats(a, b, 'a', 'b')
+    assert table.index.tolist() == ['N', '均值', '中位数', '最小', '最大']
+    assert table.columns.tolist() == ['a', 'b', '差值']
+    assert table['a'].tolist() == [3, 2.3, 2.0, 1.0, 4.0]
+    assert table['b'].tolist() == [4, 5.0, 5.0, 3.0, 7.0]
+    assert table['差值'].tolist() == ['', '+2.7', '', '', '']
+    assert compare_numeric_stats(b, a, 'a', 'b').loc['均值', '差值'] == '-2.7'
+    assert compare_numeric_stats(a, a, 'a', 'b').loc['均值', '差值'] == '0.0'
+    empty = numeric_stats(pd.Series([], dtype=float))
+    assert compare_numeric_stats(a, empty, 'a', 'b')['差值'].tolist() == [''] * 5
+
+
+def test_comparisons_translate_headers_and_preserve_count_pct_format():
+    from engine.i18n import set_lang
+    from engine.stats import compare_choice_stats, compare_numeric_stats
+
+    set_lang('en')
+    rows = single_choice_stats(pd.Series(['A']))
+    table = compare_choice_stats(rows, [], 'a', 'b')
+    assert table.columns.tolist() == ['a', 'b', 'Difference']
+    assert table.loc['A', 'a'] == format_count_pct(1, 1)
+    assert table.loc['A', 'b'] == format_count_pct(0, 0)
+    numeric = numeric_stats(pd.Series([1]))
+    table = compare_numeric_stats(numeric, numeric, 'a', 'b')
+    assert table.index.tolist() == ['N', 'Mean', 'Median', 'Minimum', 'Maximum']
+    assert table.columns.tolist() == ['a', 'b', 'Difference']
+
+
+def test_matching_question_candidates_kind_similarity_and_stable_ties():
+    from engine.stats import matching_question_candidates
+
+    current = {'kind': 'single', 'title': 'Favorite image'}
+    candidates = [
+        {'kind': 'single', 'title': 'Age'},
+        {'kind': 'numeric', 'title': 'Favorite image'},
+        {'kind': 'single', 'title': 'Favorite image?', 'id': 1},
+        {'kind': 'single', 'title': 'Favorite image'},
+        {'kind': 'single', 'title': 'Favorite image?', 'id': 2},
+    ]
+    original = candidates.copy()
+    assert matching_question_candidates(current, candidates) == [candidates[i] for i in [3, 2, 4, 0]]
+    assert candidates == original
+    assert matching_question_candidates({'kind': 'multi', 'title': ''}, candidates) == []
+    assert matching_question_candidates(current, []) == []

@@ -3,6 +3,45 @@
 from __future__ import annotations
 
 EN_APP: dict[str, str] = {
+    '本份问卷': 'This survey',
+    '1. 选择问卷': '1. Choose a survey',
+    '2. 选择题目': '2. Choose a question',
+    '3. 选择选项（分组）': '3. Group answer options',
+    '这份问卷没有可用的单选/多选题。': 'This survey has no available single-choice or multi-choice questions.',
+    '其余未覆盖的人另算一组': 'Include unmatched respondents as a separate group',
+    '维度{n}': 'Dimension {n}',
+    '维度名称不能重复，请修改后再生成。': 'Dimension names must be unique. Rename them before generating.',
+    '交叉分析板块 {n}': 'Cross-analysis block {n}',
+    '删除这个板块': 'Delete this block',
+    '+ 新增交叉分析板块': '+ Add cross-analysis block',
+    '每个板块左右两栏分别选问卷、题目、维度，下方生成对比；同一份文档可以建好几个独立的交叉分析板块。': 'Choose a survey, question, and dimensions on each side, then generate the comparison below. Each document can contain multiple independent cross-analysis blocks.',
+    '{source} 按 {count} 个维度分组，对比 {target} 上的分布': '{source}, grouped into {count} dimensions, compared with the distribution of {target}',
+    '{label}（左侧）': '{label} (left)',
+    '{label}（右侧）': '{label} (right)',
+
+    "本问卷内交叉分析": "Within-survey cross-analysis",
+    "跨问卷对比": "Cross-survey comparison",
+    "挑另一份已经分析过的问卷，对比对应题目在两次测试里的结果，适合同一批素材或问卷跨版本、跨轮次迭代时使用。":
+        "Choose another analyzed survey to compare corresponding questions across tests, versions, or rounds of the same materials or questionnaire.",
+    "暂无可用于对比的项目。": "No projects are available for comparison.",
+    "对比问卷所在项目": "Comparison survey project",
+    "这个项目下没有其它可对比的问卷分析，请选择其它项目。":
+        "This project has no other survey analyses to compare. Choose another project.",
+    "对比问卷": "Comparison survey",
+    "本问卷没有可对比的单选、多选或数值题。":
+        "This survey has no single-choice, multi-choice, or numeric questions to compare.",
+    "本问卷题目": "Current survey question",
+    "对比问卷没有同类型的题目，请选择其它问卷或本问卷题目。":
+        "The comparison survey has no questions of the same type. Choose another survey or current question.",
+    "对比问卷题目（按标题相似度排序）": "Comparison question (ordered by title similarity)",
+    "差值 = {label_b} − {label_a}；选择题以百分点（pp）表示。":
+        "Difference = {label_b} − {label_a}; choice questions use percentage points (pp).",
+    "生成对比": "Generate comparison",
+    "跨问卷对比｜{label_a}·{question_a} vs {label_b}·{question_b}":
+        "Cross-survey comparison | {label_a}·{question_a} vs {label_b}·{question_b}",
+    "有效样本：{label_a} N={n_a}；{label_b} N={n_b}":
+        "Valid samples: {label_a} N={n_a}; {label_b} N={n_b}",
+    "差值": "Difference",
     "自动识别出 {count} 道排序题（按选项列名规律+名次取值判断），已经在下面的映射表里合并成 ranking 类型，不用手动一个个改分组键了；不对的话可以在表格里直接调整。":
         "Automatically detected {count} ranking questions from option column names and rank values, "
         "and grouped them as ranking in the mapping table below. You don't need to edit each group key "
@@ -135,6 +174,12 @@ EN_APP: dict[str, str] = {
     "包含哪些取值": "Included values",
     "+ 新增维度": "+ Add group",
     "按选项重置": "Reset to one group per option",
+    "排序方式": "Sort by",
+    "默认顺序": "Default order",
+    "占比从高到低": "Share: high to low",
+    "占比从低到高": "Share: low to high",
+    "上移这个维度": "Move this group up",
+    "下移这个维度": "Move this group down",
     "把没被任何维度覆盖的人另算一个「其余」维度": "Include respondents outside all defined groups in a “Rest” group",
     "3. 对比到哪道题": "3. Question to compare",
     "没有列被标成「平台信息」——如果你的数据里有 ID/提交时间这类平台自动收录的字段，去上面「数据映射」表里把对应行的「分类」改成「平台信息」。": "No columns are assigned to platform metadata. If your data includes fields such as IDs or submission times, set their category to Platform metadata in the Data mapping table above.",

@@ -349,3 +349,18 @@ def test_detect_multi_select_groups_requires_at_least_two_sibling_columns():
     groups, _ = detect_multi_select_groups(df)
 
     assert groups == {}
+
+
+def test_filter_valid_samples_matches_any_screen_out_and_preserves_input():
+    from engine.clean import filter_valid_samples
+
+    df = pd.DataFrame({'s1': ['fail', 'pass', 'fail', None, 'pass'],
+                       's2': ['fail', 'fail', 'pass', None, 'pass']}, index=[8, 3, 9, 4, 2])
+    original = df.copy(deep=True)
+    result = filter_valid_samples(df, {'s1': ['fail'], 's2': ['fail'], 'unused': []})
+    pd.testing.assert_frame_equal(result, df.loc[[4, 2]])
+    pd.testing.assert_frame_equal(df, original)
+    pd.testing.assert_frame_equal(filter_valid_samples(df, {}), df)
+    pd.testing.assert_frame_equal(filter_valid_samples(df, {'s1': []}), df)
+    assert filter_valid_samples(df.iloc[:0], {'s1': ['fail']}).empty
+    assert filter_valid_samples(df.iloc[:3], {'s1': ['fail'], 's2': ['fail']}).empty

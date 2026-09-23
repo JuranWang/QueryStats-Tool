@@ -5,6 +5,7 @@ from __future__ import annotations
 from engine.i18n import t
 
 from collections import Counter
+from difflib import SequenceMatcher
 from typing import Any, Iterable
 
 import pandas as pd
@@ -115,6 +116,49 @@ def numeric_stats(series: pd.Series) -> dict:
         "min": float(numeric.min()),
         "max": float(numeric.max()),
     }
+
+
+def compare_choice_stats(
+    stats_a: list[dict], stats_b: list[dict], label_a: str, label_b: str,
+) -> pd.DataFrame:
+    """Align observed options and compare respondent percentages (B minus A)."""
+
+    rows_a = {row["option"]: row for row in stats_a}
+    rows_b = {row["option"]: row for row in stats_b}
+    options = list(dict.fromkeys([*rows_a, *rows_b]))
+    missing = {"pct": 0.0, "count_pct_label": format_count_pct(0, 0)}
+    rows = []
+    for option in options:
+        a, b = rows_a.get(option, missing), rows_b.get(option, missing)
+        delta = round(b["pct"] - a["pct"], 1) or 0.0
+        difference = f"{delta:+.1f}pp" if delta > 0 else f"{delta:.1f}pp"
+        rows.append([a["count_pct_label"], b["count_pct_label"], difference])
+    return pd.DataFrame(rows, index=options, columns=[label_a, label_b, t("差值")])
+
+
+def compare_numeric_stats(
+    numeric_a: dict, numeric_b: dict, label_a: str, label_b: str,
+) -> pd.DataFrame:
+    """Compare descriptive statistics, with a difference only for the mean."""
+
+    keys = ["n", "mean", "median", "min", "max"]
+    delta = round(numeric_b["mean"] - numeric_a["mean"], 1) or 0.0
+    difference = "" if pd.isna(delta) else (f"{delta:+.1f}" if delta > 0 else f"{delta:.1f}")
+    return pd.DataFrame(
+        [[numeric_a[key], numeric_b[key], difference if key == "mean" else ""] for key in keys],
+        index=[t("N"), t("均值"), t("中位数"), t("最小"), t("最大")],
+        columns=[label_a, label_b, t("差值")],
+    )
+
+
+def matching_question_candidates(unit: dict, candidates: list[dict]) -> list[dict]:
+    """Return same-kind questions ordered by title similarity, preserving ties."""
+
+    return sorted(
+        [candidate for candidate in candidates if candidate["kind"] == unit["kind"]],
+        key=lambda candidate: SequenceMatcher(None, unit["title"], candidate["title"]).ratio(),
+        reverse=True,
+    )
 
 
 def crosstab_counts(

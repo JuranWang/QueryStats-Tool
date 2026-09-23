@@ -9,6 +9,16 @@ from typing import Any
 import pandas as pd
 
 
+def filter_valid_samples(df_all: pd.DataFrame, screen_fail_values: dict) -> pd.DataFrame:
+    """Exclude respondents matching any configured screen-out value."""
+
+    valid_mask = pd.Series(True, index=df_all.index)
+    for col, fail_values in screen_fail_values.items():
+        if fail_values:
+            valid_mask &= ~df_all[col].isin(fail_values)
+    return df_all[valid_mask]
+
+
 _CODE_LIKE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,19}$")
 # 见数/Credamo 有些导出（尤其是带分流/多轮重复题的问卷，比如"图片联想测试"这种一套
 # 子问题在 Q1/Q2/Q3 三轮里重复出现的）字段代码不是干净的"Q5_1"，而是"Q1_1_"这种代码

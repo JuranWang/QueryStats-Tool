@@ -254,6 +254,22 @@ def save_images(conn: sqlite3.Connection, document_id: int, q_no: str, images_pa
     touch_document(conn, document_id)
 
 
+def save_crosstab_blocks(
+    conn: sqlite3.Connection, document_id: int, blocks_payload: list[dict], *, state_payload: dict | None = None,
+) -> None:
+    """整份覆盖当前交叉分析板块，保留图片和 AI 结果；删除的板块也从正式库里消失。
+
+    分组在 session_state 的独立 key 中，另存 crosstab_state 恢复配置和只增不减的编号。
+    """
+
+    extras = read_document_extras(conn, document_id) or {}
+    extras["crosstab_blocks"] = blocks_payload
+    if state_payload is not None:
+        extras["crosstab_state"] = state_payload
+    write_document_extras(conn, document_id, extras)
+    touch_document(conn, document_id)
+
+
 def _load_question_values(conn: sqlite3.Connection, question: sqlite3.Row) -> list:
     """单选/数值/开放题用——一道题只对应一列。多选题走 `_load_multi_question`，
     不用这个函数（多选题要重建出好几列，不是一列）。"""

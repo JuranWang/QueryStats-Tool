@@ -7,6 +7,40 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-22 — v1.1.0
+
+- **交叉分析改版：左右对称布局 + 多板块** / **Cross-analysis redesigned: symmetric layout + multiple blocks.**
+  - 「8. 交叉分析」不再是"本问卷内/跨问卷对比"两个 tab，改成左右两栏对称结构：
+    每栏各自「1. 选择问卷（默认本份，也可选其他已保存的问卷）→ 2. 选择题目 →
+    3. 选择选项（分组）」，两栏是不是同一份文档，决定用联合交叉表还是独立占比对比。
+    The two old tabs ("within-survey" / "cross-survey") are merged into one symmetric
+    layout: each side independently picks "1. Survey (defaults to this document, or
+    any other saved one) → 2. Question → 3. Grouped options." Whether the two sides
+    point at the same document decides a joint crosstab vs. an independent-share
+    comparison.
+  - 支持在同一份文档里新增好几个独立的交叉分析板块（不是加选项，是加整块），
+    每个板块可以单独删除。
+    One document can now hold several independent cross-analysis blocks (not more
+    options within one — whole additional blocks), each deletable on its own.
+  - 生成结果立刻落库，不依赖手动保存或 20 秒自动草稿（草稿表本来就不会在正常
+    重新打开时被读回来）；每个板块下方支持插入图片，跨问卷对比的图表支持一键
+    复制/下载。
+    Results are saved immediately on generation — not dependent on manual save or
+    the 20-second draft table (which was never read back on a normal reopen anyway).
+    Each block supports inserting images below it, and cross-survey comparison charts
+    support one-click copy/download.
+  - 维度分组列表新增排序方式（默认顺序/占比从高到低/占比从低到高）和手动上下
+    调整，方便结果表格里选项的呈现顺序。
+    The dimension-grouping list now has a sort control (default / share high-to-low /
+    share low-to-high) plus manual up/down reordering, for controlling how options
+    appear in the result table.
+  - 修复一个真机截图发现的问题："选择问卷"下拉框选中"本份问卷"时显示成占位提示
+    文字而不是"本份问卷"三个字（原因是选项值直接用了 Python 的 None，跟控件自己
+    "没有选中项"的内部表示撞了）。
+    Fixed a real-browser-caught bug: the "Survey" dropdown showed a placeholder
+    instead of "This document" when that option was selected (the option's value was
+    Python's `None`, which collided with the widget's own "nothing selected" sentinel).
+
 ## 2026-09-22 — v1.0.0
 
 - **新增排序题支持** / **Ranking questions are now supported.**

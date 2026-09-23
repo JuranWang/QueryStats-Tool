@@ -915,6 +915,262 @@ def render_chart(chart_type: str, config: dict, key: str) -> None:
             st.caption(footer)
 
 
+def assign_first_group(raw_value_or_list, kind, valid_groups, include_rest):
+    """左侧圈人群、单选题归组：每个人只进第一个匹配的维度。"""
+
+    for group in valid_groups:
+        if kind == "single":
+            if pd.notna(raw_value_or_list) and raw_value_or_list in group["values"]:
+                return group["name"]
+        elif set(group["values"]) & set(raw_value_or_list):
+            return group["name"]
+    return t("其余") if include_rest else None
+
+
+def all_matching_groups(selected_values, valid_groups, include_rest):
+    """右侧多选题按匹配维度展开，同一维度里选了几个选项仍只算一个人。"""
+
+    matched = [g["name"] for g in valid_groups if set(g["values"]) & set(selected_values)]
+    return matched or ([t("其余")] if include_rest else [])
+
+
+def dimension_stats_result(group_col: pd.Series, group_order: list[str]) -> list[dict]:
+    """汇总独立问卷的维度占比；列表表示一个人匹配多个维度，分母仍按人算。
+
+    跟 multi_choice_stats 一样，多选各维度的占比加起来可以超过 100%。未覆盖且
+    没启用「其余」的人不参与本次分析，空列表由调用方转成 None，不按展开后的行数算。
+    """
+
+    n_total = int(group_col.notna().sum())
+    rows = []
+    for name in group_order:
+        n = int(group_col.apply(lambda value: name in value if isinstance(value, list) else value == name).sum())
+        pct = round(n / n_total * 100, 1) if n_total else 0.0
+        rows.append({"option": name, "n": n, "pct": pct, "count_pct_label": stats.format_count_pct(n, n_total)})
+    return rows
+
+
+def _compute_crosstab_block_result(left_ctx: dict, right_ctx: dict) -> dict:
+    """同问卷算联合交叉表，跨问卷分别算分布；两种结果共用板块和保存格式。"""
+
+    def first_groups(ctx):
+        return ctx["source_series"].apply(
+            lambda v: assign_first_group(v, ctx["kind"], ctx["valid_groups"], ctx["include_rest"])
+        )
+
+    left_label, right_label = left_ctx["doc_label"], right_ctx["doc_label"]
+    same_doc = left_ctx["doc_id"] is None and right_ctx["doc_id"] is None
+    chart_config = None
+    if same_doc:
+        group_col_left = first_groups(left_ctx)
+        group_totals = {g: int((group_col_left == g).sum()) for g in left_ctx["group_order"]}
+        if right_ctx["kind"] == "single":
+            answer_col = first_groups(right_ctx)
+        else:
+            answer_col = right_ctx["source_series"].apply(
+                lambda vals: all_matching_groups(vals, right_ctx["valid_groups"], right_ctx["include_rest"])
+            )
+        crosstab_input = pd.DataFrame({"分组": group_col_left.values, "对比题答案": answer_col.values})
+        if right_ctx["kind"] == "multi":
+            crosstab_input = crosstab_input.explode("对比题答案")
+        result_table = stats.crosstab_counts(
+            crosstab_input, "分组", "对比题答案", group_order=left_ctx["group_order"],
+            answer_order=right_ctx["group_order"], group_totals=group_totals,
+        )
+        title = t("{source} 按 {count} 个维度分组，对比 {target} 上的分布",
+                  source=left_ctx["question_label"], count=len(left_ctx["valid_groups"]), target=right_ctx["question_label"])
+    else:
+        # 同名文档、甚至两栏显式选了同一份外部文档时，图例和表头也必须可区分。
+        if left_label == right_label:
+            left_label = t("{label}（左侧）", label=left_label)
+            right_label = t("{label}（右侧）", label=right_label)
+        rows = []
+        totals = []
+        for ctx in (left_ctx, right_ctx):
+            if ctx["kind"] == "multi":
+                group_col = ctx["source_series"].apply(
+                    lambda vals: all_matching_groups(vals, ctx["valid_groups"], ctx["include_rest"]) or None
+                )
+            else:
+                group_col = first_groups(ctx)
+            rows.append(dimension_stats_result(group_col, ctx["group_order"]))
+            totals.append(int(group_col.notna().sum()))
+        result_table = stats.compare_choice_stats(rows[0], rows[1], left_label, right_label)
+        title = t("跨问卷对比｜{label_a}·{question_a} vs {label_b}·{question_b}",
+                  label_a=left_label, question_a=left_ctx["unit"]["display_no"],
+                  label_b=right_label, question_b=right_ctx["unit"]["display_no"])
+        categories = result_table.index.tolist()
+        series = []
+        for label, result_rows in zip((left_label, right_label), rows):
+            percentages = {row["option"]: row["pct"] for row in result_rows}
+            series.append({"name": label, "data": [percentages.get(c, 0.0) for c in categories]})
+        chart_config = chart_spec.build_multi_series_chart_config(
+            categories, series, title,
+            t("有效样本：{label_a} N={n_a}；{label_b} N={n_b}",
+              label_a=left_label, n_a=totals[0], label_b=right_label, n_b=totals[1]),
+        )
+        chart_config["xAxis"]["axisLabel"] = {"formatter": "{value}%"}
+    return {"kind": "same_doc" if same_doc else "cross_doc", "title": title, "table": result_table,
+            "chart_config": chart_config, "left_label": left_label, "right_label": right_label}
+
+
+def render_crosstab_side(block_id: str, side: str, side_state: dict, units: list[dict], df_valid: pd.DataFrame) -> dict | None:
+    """左右两栏共用的三层配置：问卷、题目、选项维度。"""
+
+    conn = _get_db_conn()
+    current_document_id = st.session_state.get("saved_document_id")
+    other_docs = []
+    for project in conn.execute("SELECT id, name FROM projects ORDER BY id DESC").fetchall():
+        for doc in db.list_documents(conn, project["id"], research_type="quant_survey"):
+            if doc["id"] != current_document_id:
+                other_docs.append((doc["id"], f"{project['name']} · {doc['title']} · #{doc['id']}"))
+    # 真实验证发现的坑：st.selectbox 的选项列表里如果直接放 Python 的 None 当某个
+    # 选项的值（这里原来想用 None 表示"本份问卷"），Streamlit 没法区分"用户确实选中
+    # 了这个值恰好是 None 的选项"和"这个控件还没有任何选中项"——组件会当成后者，
+    # 界面上显示的是占位提示文字"Choose an option"而不是"本份问卷"，看起来像是
+    # 什么都没选中，其实内部选中的就是（唯一的）默认项，真机截图对比才发现这个问题。
+    # 改成用一个不会跟真实 document_id 撞上的字符串哨兵值给控件本身用，选完之后
+    # 再翻译回 None——除了这一段，后面所有"doc_id is None 表示本份问卷"的逻辑
+    # （落库格式、_compute_crosstab_block_result 等）都不用跟着改。
+    SELF_DOC_SENTINEL = "__self__"
+    doc_choice_ids = [SELF_DOC_SENTINEL] + [d[0] for d in other_docs]
+    doc_choice_labels = {SELF_DOC_SENTINEL: t("本份问卷"), **dict(other_docs)}
+    prefix = f"xtb_{block_id}_{side}"
+    current_choice = SELF_DOC_SENTINEL if side_state["doc_id"] is None else side_state["doc_id"]
+    picked_choice = st.selectbox(
+        t("1. 选择问卷"), doc_choice_ids, format_func=lambda v: doc_choice_labels[v],
+        index=doc_choice_ids.index(current_choice) if current_choice in doc_choice_ids else 0,
+        key=f"{prefix}_doc",
+    )
+    picked_doc_id = None if picked_choice == SELF_DOC_SENTINEL else picked_choice
+    if picked_doc_id != side_state["doc_id"]:
+        # 不同问卷可以有完全相同的题号/题干，换问卷时不能串用上一份的选项和控件值。
+        for key in list(st.session_state):
+            if key.startswith(f"{prefix}_groups::") or key == f"{prefix}_question":
+                del st.session_state[key]
+        side_state["question_key"] = None
+    side_state["doc_id"] = picked_doc_id
+    if picked_doc_id is None:
+        side_units, side_df = units, df_valid
+        doc_label = st.session_state.get("document_title", t("本份问卷"))
+    else:
+        loaded = persistence.load_analysis(conn, picked_doc_id)
+        side_units = loaded["units"]
+        side_df = clean.filter_valid_samples(loaded["df_all"], loaded["screen_fail_values"])
+        doc_label = loaded["title"]
+    candidate_units = [u for u in side_units if u["kind"] in ("single", "multi")]
+    if not candidate_units:
+        st.info(t("这份问卷没有可用的单选/多选题。"))
+        return None
+    q_options = {f"{u['display_no']}｜{u['title']}": u for u in candidate_units}
+    q_keys = list(q_options)
+    q_key = st.selectbox(
+        t("2. 选择题目"), q_keys,
+        index=q_keys.index(side_state["question_key"]) if side_state["question_key"] in q_keys else 0,
+        key=f"{prefix}_question",
+    )
+    side_state["question_key"] = q_key
+    unit = q_options[q_key]
+    if unit["kind"] == "single":
+        source_series = side_df[unit["columns"][0]]
+        candidate_values = sorted(source_series.dropna().unique().tolist(), key=str)
+    else:
+        source_series = _multi_select_list_series(side_df, unit["columns"])
+        candidate_values = sorted({v for vals in source_series for v in vals}, key=str)
+    groups_key = f"{prefix}_groups::{q_key}"
+    st.session_state.setdefault(groups_key, [{"name": str(v), "values": [v]} for v in candidate_values])
+    # 删除/重置后行号会换人；下一次创建控件前清掉旧值，跟图片管理组件的做法一致。
+    reset_count = st.session_state.pop(f"{groups_key}_reset_widgets", 0)
+    for gi in range(reset_count):
+        st.session_state.pop(f"{groups_key}_name_{gi}", None)
+        st.session_state.pop(f"{groups_key}_values_{gi}", None)
+    st.markdown(t("3. 选择选项（分组）"))
+    groups = st.session_state[groups_key]
+
+    # 排序方式——按当前这道题原始选项的出现次数（分组内取值之和）给维度排一次序，
+    # 不是"锁死一直按比例排"：选中某个排序方式的那一刻重排一次，之后用户用下面的
+    # ↑↓ 手动调整完全不会被这里再次打回去（只有再换一次排序方式才会重新触发）。
+    # "默认顺序"本身不做任何重排，只是清掉"已经按某种比例排过"的记录，不等于
+    # "恢复成最初的选项顺序"（那是下面「按选项重置」按钮的职责，重置连分组内容
+    # 一起清空，跟这里"只调顺序、不动分组内容"是两回事）。
+    sort_labels = {"default": t("默认顺序"), "pct_desc": t("占比从高到低"), "pct_asc": t("占比从低到高")}
+    sort_choice_key = f"{groups_key}_sort_choice"
+    sort_applied_key = f"{groups_key}_sort_applied"
+    picked_sort = st.selectbox(
+        t("排序方式"), list(sort_labels), format_func=lambda k: sort_labels[k],
+        key=sort_choice_key,
+    )
+    if picked_sort != "default" and st.session_state.get(sort_applied_key) != picked_sort:
+        if unit["kind"] == "single":
+            value_counts = source_series.value_counts().to_dict()
+        else:
+            value_counts: dict = {}
+            for vals in source_series:
+                for v in vals:
+                    value_counts[v] = value_counts.get(v, 0) + 1
+        groups.sort(
+            key=lambda g: sum(value_counts.get(v, 0) for v in g["values"]),
+            reverse=(picked_sort == "pct_desc"),
+        )
+        st.session_state[sort_applied_key] = picked_sort
+        st.session_state[f"{groups_key}_reset_widgets"] = len(groups)
+        st.rerun()
+    elif picked_sort == "default":
+        st.session_state[sort_applied_key] = None
+
+    header_name_col, header_values_col, _, _, _ = st.columns([3, 5, 0.6, 0.6, 1])
+    header_name_col.caption(t("维度名称"))
+    header_values_col.caption(t("包含哪些取值"))
+    delete_index = None
+    move_swap: tuple[int, int] | None = None
+    for gi, group in enumerate(groups):
+        name_col, values_col, up_col, down_col, del_col = st.columns([3, 5, 0.6, 0.6, 1])
+        group["name"] = name_col.text_input(
+            t("维度名 {index}", index=gi), value=group["name"], key=f"{groups_key}_name_{gi}", label_visibility="collapsed"
+        )
+        group["values"] = values_col.multiselect(
+            t("包含取值 {index}", index=gi), candidate_values,
+            default=[v for v in group["values"] if v in candidate_values],
+            key=f"{groups_key}_values_{gi}", label_visibility="collapsed",
+        )
+        # 手动微调顺序——不依赖拖拽（这个项目里拖拽类组件之前踩过坑，见 CLAUDE.md），
+        # 跟图片管理组件的"↑↓调整顺序"是同一套模式，点了立刻生效，不需要额外确认。
+        if up_col.button("↑", key=f"{groups_key}_up_{gi}", disabled=gi == 0, help=t("上移这个维度")):
+            move_swap = (gi, gi - 1)
+        if down_col.button("↓", key=f"{groups_key}_down_{gi}", disabled=gi == len(groups) - 1, help=t("下移这个维度")):
+            move_swap = (gi, gi + 1)
+        if del_col.button(t("删除"), key=f"{groups_key}_del_{gi}"):
+            delete_index = gi
+    if move_swap is not None:
+        a, b = move_swap
+        groups[a], groups[b] = groups[b], groups[a]
+        st.session_state[f"{groups_key}_reset_widgets"] = len(groups)
+        st.rerun()
+    if delete_index is not None:
+        st.session_state[f"{groups_key}_reset_widgets"] = len(groups)
+        groups.pop(delete_index)
+        st.rerun()
+    btn_col1, btn_col2 = st.columns(2)
+    if btn_col1.button(t("+ 新增维度"), key=f"{groups_key}_add"):
+        groups.append({"name": t("维度{n}", n=len(groups) + 1), "values": []})
+        st.rerun()
+    if btn_col2.button(t("按选项重置"), key=f"{groups_key}_reset"):
+        st.session_state[f"{groups_key}_reset_widgets"] = len(groups)
+        st.session_state[groups_key] = [{"name": str(v), "values": [v]} for v in candidate_values]
+        st.rerun()
+    include_rest = st.checkbox(t("其余未覆盖的人另算一组"), key=f"{groups_key}_rest")
+    valid_groups = [g for g in groups if g["values"] and g["name"].strip()]
+    names = [g["name"] for g in valid_groups] + ([t("其余")] if include_rest else [])
+    if len(set(names)) != len(names):
+        st.info(t("维度名称不能重复，请修改后再生成。"))
+        return None
+    if not valid_groups:
+        return None
+    return {"unit": unit, "kind": unit["kind"], "source_series": source_series,
+            "valid_groups": valid_groups, "include_rest": include_rest, "group_order": names,
+            "doc_id": picked_doc_id, "doc_label": doc_label, "df": side_df, "question_label": q_key}
+
+
 def _persist_ai_results() -> None:
     """把 session_state 里当前所有 AI 分类结果整份写进这份文档的正式数据（不等手动保存）。
 
@@ -1064,6 +1320,22 @@ def _chart_snapshot_png_for_save(q_no: str, chart_kind: str, stats_result: list[
     return png_bytes
 
 
+def _grouped_bar_snapshot_png_for_save(key: str, categories: list[str], series: list[dict], title_zh: str) -> bytes:
+    """按内容指纹缓存分组柱状图，避免每次 rerun 都重新画 matplotlib。"""
+
+    palette = _active_chart_palette()
+    fingerprint = (get_lang(), title_zh, tuple(categories), tuple((s["name"], tuple(s["data"])) for s in series), tuple(palette or []))
+    cache_key = f"grouped_bar_png_cache_{key}"
+    cached = st.session_state.get(cache_key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+    with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
+        export_word.render_grouped_bar_chart_image(categories, series, tmp.name, title=title_zh, color_palette=palette)
+        png_bytes = Path(tmp.name).read_bytes()
+    st.session_state[cache_key] = (fingerprint, png_bytes)
+    return png_bytes
+
+
 def _render_copy_image_button(png_bytes: bytes, key: str) -> None:
     """一键把图表图片复制到系统剪贴板——用浏览器原生 Clipboard API 写一段自包含的
     静态 HTML+JS（st.components.v1.html，Streamlit 自带、稳定的核心功能，不是第三方
@@ -1188,6 +1460,45 @@ def _persist_images(q_no: str) -> None:
         return
     images_payload = _images_payload(st.session_state.get(f"images_{q_no}", []))
     persistence.save_images(_get_db_conn(), document_id, q_no, images_payload)
+
+
+def _crosstab_blocks_payload() -> list[dict]:
+    """即时保存和整份保存共用编码，DataFrame 只在 session_state 内保留。"""
+
+    payload = []
+    for block in st.session_state.get("crosstab_blocks", [{"id": "1", "left": {"doc_id": None, "question_key": None}, "right": {"doc_id": None, "question_key": None}, "result": None}]):
+        entry = {"id": block["id"], "left": dict(block["left"]), "right": dict(block["right"]), "result": None}
+        if block.get("result") is not None:
+            r = block["result"]
+            table = r["table"]
+            entry["result"] = {**r, "table": table.to_dict(orient="split"),
+                               "table_index_name": table.index.name, "table_columns_name": table.columns.name}
+        payload.append(entry)
+    return payload
+
+
+def _crosstab_state_payload() -> dict:
+    """维度仍放在独立 key；保存分组和计数器，重新打开也不丢配置、不回收编号。"""
+
+    groups = {}
+    for block in st.session_state.get("crosstab_blocks", []):
+        for side in ("left", "right"):
+            q_key = block[side]["question_key"]
+            key = f"xtb_{block['id']}_{side}_groups::{q_key}"
+            if key in st.session_state:
+                groups[key] = {"groups": st.session_state[key], "include_rest": st.session_state.get(f"{key}_rest", False)}
+    return {"groups": groups, "next_block_id": st.session_state.get("crosstab_next_block_id", 2)}
+
+
+def _persist_crosstab_blocks() -> None:
+    """新增、删除、成功生成后直接保存正式 extras，不等手动保存或草稿。"""
+
+    document_id = st.session_state.get("saved_document_id")
+    if document_id is None:
+        return
+    persistence.save_crosstab_blocks(
+        _get_db_conn(), document_id, _crosstab_blocks_payload(), state_payload=_crosstab_state_payload()
+    )
 
 
 def _render_zoomable_image(image_bytes: bytes, width_pct: int) -> None:
@@ -1845,6 +2156,29 @@ def _restore_extras(extras: dict) -> None:
         st.session_state[f"label_overrides_{q_no}"] = dict(overrides)
 
 
+    restored_blocks = []
+    for entry in extras.get("crosstab_blocks", []):
+        block = {"id": entry["id"], "left": dict(entry["left"]), "right": dict(entry["right"]), "result": None}
+        if entry.get("result") is not None:
+            r = entry["result"]
+            table = pd.DataFrame(**r["table"])
+            table.index.name = r.get("table_index_name")
+            table.columns.name = r.get("table_columns_name")
+            block["result"] = {"kind": r["kind"], "title": r["title"], "table": table,
+                               "chart_config": r["chart_config"], "left_label": r["left_label"], "right_label": r["right_label"]}
+        restored_blocks.append(block)
+    # 老文档没有这个字段时也给一个空板块；明确删光的空列表则原样恢复。
+    if "crosstab_blocks" in extras:
+        st.session_state["crosstab_blocks"] = restored_blocks
+    state = extras.get("crosstab_state", {})
+    st.session_state["crosstab_next_block_id"] = max(
+        max((int(b["id"]) for b in restored_blocks), default=0) + 1, state.get("next_block_id", 2)
+    )
+    for key, value in state.get("groups", {}).items():
+        st.session_state[key] = value["groups"]
+        st.session_state[f"{key}_rest"] = value["include_rest"]
+
+
 # ---------------------------------------------------------------------------
 # 1. 上传
 # ---------------------------------------------------------------------------
@@ -2182,14 +2516,7 @@ for label, anchor in SIDEBAR_NAV:
     st.sidebar.markdown(f"[{t(label)}](#{anchor})")
 
 # 有效样本：任一筛选题命中"未通过"取值，就整体剔除
-valid_mask = pd.Series(True, index=df_all.index)
-total_screened_out = 0
-for col, fail_values in screen_fail_values.items():
-    if fail_values:
-        hit = df_all[col].isin(fail_values)
-        total_screened_out += int(hit.sum())
-        valid_mask &= ~hit
-df_valid = df_all[valid_mask]
+df_valid = clean.filter_valid_samples(df_all, screen_fail_values)
 
 if screen_fail_values and any(screen_fail_values.values()):
     st.info(t("筛选后：全量 {total} 人 → 有效样本 {valid} 人（剔除 {excluded} 人）。", total=len(df_all), valid=len(df_valid), excluded=len(df_all) - len(df_valid)))
@@ -2392,7 +2719,8 @@ with st.container(key="section_paper_6"):
         images_per_row: dict = {}
         images_align: dict = {}
         label_overrides: dict = {}
-        for u in units:
+        image_units = [{"display_no": f"crosstab_block_{b['id']}"} for b in st.session_state.get("crosstab_blocks", [])]
+        for u in units + image_units:
             q_no = u["display_no"]
             ai_result_map = _collect_ai_results_for(q_no)
             if ai_result_map:
@@ -2419,6 +2747,8 @@ with st.container(key="section_paper_6"):
             "images_per_row": images_per_row,
             "images_align": images_align,
             "label_overrides": label_overrides,
+            "crosstab_blocks": _crosstab_blocks_payload(),
+            "crosstab_state": _crosstab_state_payload(),
         }
 
 
@@ -2719,147 +3049,63 @@ with st.container(key="section_paper_7"):
                 st.write("")
 
 # ---------------------------------------------------------------------------
-# 8. ⑧ 交叉分析——手动配置任意数量的对比维度（不是"圈选 vs 其余"二选一）：
-#    默认每个选项各自成一个维度（对应"圈选的选项可以单独成为一个维度"），可以合并几个
-#    选项成一个自定义命名的维度（比如叫"圈选组"），可以新增/删除维度、无上限，
-#    对应设计文档原话"维度支持无限增加，其对比选项支持增删"。
-#    "对比到哪道题"单选/多选题都支持——多选题会把"人 × 选中的选项"展开成一行一个
-#    再交给 crosstab_counts，分母显式传成分组人数（见下面 group_totals 那段注释），
-#    不会因为一个人选了好几个选项就把分母算错。
+# 8. ⑧ 交叉分析——每个板块一套左右对称配置，生成后立即保存。
 # ---------------------------------------------------------------------------
 
 with st.container(key="section_paper_8"):
     st.header(t("8. 交叉分析"), anchor="sec8")
-    st.caption(t("手动配置，不预设。维度数量不限——默认每个选项各自一组，可以合并/改名/增删。「对比到哪道题」单选、多选题都支持。"))
-
-    from_options = {
-        f"{u['display_no']}｜{u['title']}": u
-        for section in CHART_SECTIONS
-        for u in raw_table_units[section]
-        if u["kind"] in ("single", "multi")
-    }
-    to_options = {
-        f"{u['display_no']}｜{u['title']}": u
-        for section in CHART_SECTIONS
-        for u in raw_table_units[section]
-        if u["kind"] in ("single", "multi")
-    }
-
-    if not from_options or not to_options:
-        st.info(t("至少需要两道单选/多选题（一道用来圈人群，一道用来对比），才能配置交叉分析。"))
-    else:
-        from_key = st.selectbox(t("1. 从哪道题圈人群"), list(from_options.keys()), key="crosstab_from")
-        from_unit = from_options[from_key]
-
-        from_list_series = None
-        if from_unit["kind"] == "single":
-            candidate_values = sorted(df_valid[from_unit["columns"][0]].dropna().unique().tolist(), key=str)
-        else:
-            from_list_series = _multi_select_list_series(df_valid, from_unit["columns"])
-            candidate_values = sorted({v for vals in from_list_series for v in vals}, key=str)
-
-        # 维度列表按"从哪道题圈人群"分别记，换一道题就是一套新的默认维度（每个选项各自一组）。
-        groups_key = f"crosstab_groups::{from_key}"
-        if groups_key not in st.session_state:
-            st.session_state[groups_key] = [{"name": v, "values": [v]} for v in candidate_values]
-
-        st.markdown(t("2. 配置对比维度"))
-        groups = st.session_state[groups_key]
-        # 每一行的输入框标签都隐藏了（label_visibility="collapsed"，是为了不在每一行都
-        # 重复"维度名／包含取值"这种大家已经知道意思的文字），但一整列都不显示是什么，
-        # 只看默认填的选项文字容易看不出这两列到底是干嘛的——加一行可见的列标题，只显示
-        # 一次，不用每行都重复。
-        header_name_col, header_values_col, _ = st.columns([3, 6, 1])
-        header_name_col.caption(t("维度名称"))
-        header_values_col.caption(t("包含哪些取值"))
-        delete_index = None
-        for gi, group in enumerate(groups):
-            name_col, values_col, del_col = st.columns([3, 6, 1])
-            group["name"] = name_col.text_input(
-                t("维度名 {index}", index=gi), value=group["name"], key=f"{groups_key}_name_{gi}", label_visibility="collapsed"
-            )
-            group["values"] = values_col.multiselect(
-                t("包含取值 {index}", index=gi),
-                candidate_values,
-                default=[v for v in group["values"] if v in candidate_values],
-                key=f"{groups_key}_values_{gi}",
-                label_visibility="collapsed",
-            )
-            if del_col.button(t("删除"), key=f"{groups_key}_del_{gi}"):
-                delete_index = gi
-        if delete_index is not None:
-            groups.pop(delete_index)
-            st.rerun()
-
-        btn_col1, btn_col2, _ = st.columns([1, 1, 4])
-        if btn_col1.button(t("+ 新增维度"), key=f"{groups_key}_add"):
-            groups.append({"name": f"维度{len(groups) + 1}", "values": []})
-            st.rerun()
-        if btn_col2.button(t("按选项重置"), key=f"{groups_key}_reset"):
-            st.session_state[groups_key] = [{"name": v, "values": [v]} for v in candidate_values]
-            st.rerun()
-
-        include_rest = st.checkbox(t("把没被任何维度覆盖的人另算一个「其余」维度"), key=f"{groups_key}_rest")
-
-        to_key = st.selectbox(t("3. 对比到哪道题"), list(to_options.keys()), key="crosstab_to")
-        to_unit = to_options[to_key]
-
-        valid_groups = [g for g in groups if g["values"] and g["name"].strip()]
-
-        if valid_groups and st.button(t("生成交叉分析"), key="crosstab_run"):
-            source_series = df_valid[from_unit["columns"][0]] if from_unit["kind"] == "single" else from_list_series
-
-            def assign_group(raw_value):
-                for g in valid_groups:
-                    if from_unit["kind"] == "single":
-                        if raw_value in g["values"]:
-                            return g["name"]
-                    elif set(g["values"]) & set(raw_value):
-                        return g["name"]
-                return "其余" if include_rest else None
-
-            group_col = source_series.apply(assign_group)
-            group_order = [g["name"] for g in valid_groups] + (["其余"] if include_rest else [])
-
-            # 分组人数（分母）永远按"每人一行"这份 group_col 算——不管"对比到哪道题"
-            # 是单选还是多选，一个人只能属于一个分组，这个算法本身没问题。提前在这里
-            # 算好、显式传给 crosstab_counts，是因为下面"对比到哪道题"是多选题的分支
-            # 要把数据展开成"人 × 选中的选项"一行一个，展开之后同一个分组会出现好几
-            # 行，如果还让 crosstab_counts 自己按展开后的行数去数分组人数，选得越多
-            # 分母就被撑得越大，百分比会算错——所以分母必须在展开之前、按这份原始
-            # group_col 算好。单选题这条路走这个参数其实跟以前自己算的结果一样，
-            # 只是提前算出来传进去，不影响原来的行为。
-            group_totals = {g: int((group_col == g).sum()) for g in group_order}
-
-            if to_unit["kind"] == "single":
-                crosstab_input = pd.DataFrame(
-                    {"分组": group_col.values, "对比题答案": df_valid[to_unit["columns"][0]].values}
-                )
-            else:
-                # 多选题当"对比到哪道题"：一个人选中的每个选项都要单独算一行
-                # （explode），"这个分组里有百分之多少的人选了这个选项"才算得出来；
-                # 没选任何选项的人，展开后是一行 NaN，crosstab_counts 内部会把这行
-                # dropna 掉（不会被错算成某个具体选项），但不影响他们本来就已经算进
-                # 上面 group_totals 里的分组人数。
-                to_list_series = _multi_select_list_series(df_valid, to_unit["columns"])
-                crosstab_input = pd.DataFrame(
-                    {"分组": group_col.values, "对比题答案": to_list_series.values}
-                ).explode("对比题答案")
-
-            result_table = stats.crosstab_counts(
-                crosstab_input, "分组", "对比题答案", group_order=group_order, group_totals=group_totals
-            )
-            crosstab_title = f"{from_key} 按 {len(valid_groups)} 个维度分组，对比 {to_key} 上的分布"
-            st.markdown(t("**{source} 按 {count} 个维度分组，对比 {target} 上的分布**", source=from_key, count=len(valid_groups), target=to_key))
-            display_result_table = result_table.rename_axis(index=t("对比题答案"), columns=t("分组"))
-            if include_rest and "其余" not in [g["name"] for g in valid_groups]:
-                display_result_table = display_result_table.rename(columns={"其余": t("其余")})
-            st.dataframe(display_result_table)
-
-            # 这张表算完就是个局部变量，下一次脚本重跑（比如切到⑪点"生成 Word 报告"）就
-            # 没了——存进 session_state，导出 Word 的时候才有得取。按标题去重：同一组
-            # "从哪道题→对比到哪道题"重新点一次生成，是更新这一条，不是越攒越多条重复的。
-            st.session_state.setdefault("crosstab_history", {})[crosstab_title] = result_table
+    st.caption(t("每个板块左右两栏分别选问卷、题目、维度，下方生成对比；同一份文档可以建好几个独立的交叉分析板块。"))
+    st.session_state.setdefault("crosstab_blocks", [{"id": "1", "left": {"doc_id": None, "question_key": None}, "right": {"doc_id": None, "question_key": None}, "result": None}])
+    st.session_state.setdefault("crosstab_next_block_id", 2)
+    # 每次从现存板块重建导出历史，删除板块/更换题目重算后不残留旧结果。
+    st.session_state["crosstab_history"] = {}
+    delete_block_id = None
+    for position, block in enumerate(st.session_state["crosstab_blocks"]):
+        block_id = block["id"]
+        with st.container(border=True, key=f"crosstab_block_{block_id}"):
+            title_col, del_col = st.columns([6, 1])
+            title_col.markdown(f"**{t('交叉分析板块 {n}', n=position + 1)}**")
+            if del_col.button(t("删除这个板块"), key=f"xtb_{block_id}_delete_block"):
+                delete_block_id = block_id
+            left_col, right_col = st.columns(2)
+            with left_col:
+                left_ctx = render_crosstab_side(block_id, "left", block["left"], units, df_valid)
+            with right_col:
+                right_ctx = render_crosstab_side(block_id, "right", block["right"], units, df_valid)
+            can_generate = left_ctx is not None and right_ctx is not None
+            if st.button(t("生成交叉分析"), key=f"xtb_{block_id}_run", type="primary", disabled=not can_generate):
+                block["result"] = _compute_crosstab_block_result(left_ctx, right_ctx)
+                _persist_crosstab_blocks()
+            result = block.get("result")
+            if result is not None:
+                st.markdown(f"**{result['title']}**")
+                table = result["table"]
+                st.dataframe(table.rename_axis(index=t("对比题答案"), columns=t("分组")) if result["kind"] == "same_doc" else table)
+                if result["chart_config"] is not None:
+                    config = result["chart_config"]
+                    _, dl_col, cp_col = st.columns([8, 1, 1])
+                    png = _grouped_bar_snapshot_png_for_save(f"xtb_{block_id}", config["yAxis"]["data"], config["series"], result["title"])
+                    with dl_col:
+                        st.download_button("", data=png, file_name=f"crosstab_{block_id}.png", mime="image/png",
+                                           icon=":material/download:", key=f"xtb_{block_id}_download", help=t("下载这张图表"))
+                    with cp_col:
+                        _render_copy_image_button(png, key=f"xtb_{block_id}_copy")
+                    # render_chart 会改标题并 pop footer，传副本，不能改掉已经保存的结果。
+                    render_chart("bar_h", json.loads(json.dumps(config)), key=f"xtb_{block_id}_chart")
+                st.session_state["crosstab_history"][result["title"]] = table
+                q_no_for_images = f"crosstab_block_{block_id}"
+                render_image_attachments_trigger(q_no_for_images)
+                render_image_attachments_grid(q_no_for_images)
+    if delete_block_id is not None:
+        st.session_state["crosstab_blocks"] = [b for b in st.session_state["crosstab_blocks"] if b["id"] != delete_block_id]
+        _persist_crosstab_blocks()
+        st.rerun()
+    if st.button(t("+ 新增交叉分析板块"), key="xtb_add_block"):
+        new_id = str(st.session_state["crosstab_next_block_id"])
+        st.session_state["crosstab_next_block_id"] += 1
+        st.session_state["crosstab_blocks"].append({"id": new_id, "left": {"doc_id": None, "question_key": None}, "right": {"doc_id": None, "question_key": None}, "result": None})
+        _persist_crosstab_blocks()
+        st.rerun()
 
 # ---------------------------------------------------------------------------
 # 9. ⑨ AI 洞察——不自动展示，点按钮才生成；每条洞察引用的数字都要先在 Python 算好的

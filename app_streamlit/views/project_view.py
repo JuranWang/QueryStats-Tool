@@ -66,6 +66,17 @@ with tab_quant:
             if col_open.button(t('打开'), key=f"open_doc_{doc['id']}"):
                 st.session_state["current_document_id"] = doc["id"]
                 st.session_state["analysis_mode"] = "load_existing"
+                # 真实反馈："在外面（这个列表）改了标题，进了问卷发现还是之前的名字"——
+                # app.py 那边判断"要不要重新读库"，靠的是"这次要打开的 document_id
+                # 是不是跟上次已经加载过的那个不一样"，同一份文档在同一个浏览器 session
+                # 里只要 id 没变就直接跳过重新读库（这本来是为了不要每次 rerun 都重读，
+                # 免得把用户正在编辑、还没保存的内容覆盖掉）。但"从这个列表点『打开』"
+                # 本身就是一次明确的、独立的"重新进入"动作——用户可能刚在这个列表里
+                # 重命名过，或者别的浏览器标签页/别人改过这份文档——每次点『打开』都该
+                # 看到数据库里当前真实的样子，不能带着这个 session 里可能还留着的旧缓存。
+                # 清掉这个"已加载"标记，app.py 那边的判断就会认为"这是一次新的加载"，
+                # 强制重新读一遍库，标题这类字段就不会显示成改之前的旧值了。
+                st.session_state.pop("loaded_document_snapshot", None)
                 st.switch_page("app.py")
 
             with col_rename.popover(t('重命名')):

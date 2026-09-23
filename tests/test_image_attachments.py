@@ -27,6 +27,7 @@ HELPERS = [
     "_image_mime", "_images_payload", "_persist_images", "_render_zoomable_image",
     "_image_aspect_ratio", "_render_tiles_row", "_collect_image_library",
     "_restore_extras", "_collect_ai_results_for", "_extras_payload",
+    "_crosstab_blocks_payload", "_crosstab_state_payload",
     "_extras_fingerprint", "render_image_attachments_trigger",
 ]
 # 模块级常量不是函数，AST 只扫了 FunctionDef，得单独从源码里挖出来注入命名空间——

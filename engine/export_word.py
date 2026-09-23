@@ -15,6 +15,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 from matplotlib.patches import Rectangle
@@ -25,7 +26,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
-from engine.chart_spec import OPTION_COLOR_PALETTE, TITLE_COLOR, choose_chart_type
+from engine.chart_spec import SERIES_COLORS, OPTION_COLOR_PALETTE, TITLE_COLOR, choose_chart_type
 
 
 QUESTION_TYPE_ZH = {
@@ -352,6 +353,37 @@ def _render_chart_image(
 
     figure.savefig(tmp_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(figure)
+
+
+def render_grouped_bar_chart_image(
+    categories: list[str], series: list[dict], tmp_path: str,
+    title: str | None = None, color_palette: list[str] | None = None,
+) -> None:
+    """每个维度下并排画各问卷的占比，图例直接用默认色块，不复用饼图的排版逻辑。"""
+
+    plt.rcParams["font.sans-serif"] = [_chart_font_family(), "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+    colors = color_palette or SERIES_COLORS
+    figure, axis = plt.subplots(figsize=(max(8, len(categories) * 0.9), 5))
+    try:
+        positions = np.arange(len(categories))
+        width = 0.8 / max(len(series), 1)
+        for index, item in enumerate(series):
+            axis.bar(positions + (index - (len(series) - 1) / 2) * width, item["data"], width,
+                     label=item["name"], color=colors[index % len(colors)])
+        axis.set_xticks(positions, labels=[str(c) for c in categories], rotation=30, ha="right")
+        axis.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=100))
+        axis.set_ylim(bottom=0)
+        axis.spines[["top", "right"]].set_visible(False)
+        if series:
+            axis.legend(loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False)
+        if title:
+            figure.suptitle("\n".join(textwrap.wrap(title, width=32) or [title]),
+                            fontsize=13, fontweight="bold", color=TITLE_COLOR)
+        figure.tight_layout()
+        figure.savefig(tmp_path, dpi=150, bbox_inches="tight", facecolor="white")
+    finally:
+        plt.close(figure)
 
 
 def _set_cell_shading(cell, fill: str) -> None:
