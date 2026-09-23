@@ -81,7 +81,8 @@ Instead of the UI you can use environment variables (the UI value wins if both a
 | Qwen (international) | `DASHSCOPE_INTL_API_KEY` |
 | Grok | `XAI_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
-| MiniMax | `MINIMAX_API_KEY` |
+| MiniMax (international) | `MINIMAX_API_KEY` |
+| MiniMax (mainland China) | `MINIMAX_CN_API_KEY` |
 | Custom API | `CUSTOM_API_KEY` and `CUSTOM_BASE_URL` |
 
 Per-item translation of open-ended answers uses a separate **translation provider**, which

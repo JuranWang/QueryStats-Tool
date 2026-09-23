@@ -173,6 +173,13 @@ PROVIDER_REGISTRY: dict[str, type] = {
     # 没能从官方文档里确认下来，所以先只接国际版这一个；用大陆账号 key 的话大概率会
     # 认证失败，这种情况改用下面的"自定义 API"，自己填大陆那个 base_url。
     "minimax": _openai_compatible_factory("https://api.minimax.io/v1"),
+    # 大陆版 MiniMax 的 OpenAI 兼容域名之前一直没能从官方文档确认下来（当时资料
+    # 前后矛盾），2026-09 重新查证：MiniMax 官方文档（platform.minimax.io 及其
+    # 大陆镜像 platform.minimaxi.com）确认大陆账号走的是完全不同的域名
+    # api.minimaxi.com（注意比国际版的 minimax.io 多一个"i"，不是同一个域名换
+    # 个路径），国际/全球账号才是 api.minimax.io——两边 key 互不通用，跟 Qwen
+    # 大陆/国际两个控制台是同一类坑，这里同样拆成两个供应商条目。
+    "minimax_cn": _openai_compatible_factory("https://api.minimaxi.com/v1"),
     # "自定义 API"——同事们各有各习惯用的供应商，不可能每一家都在这个列表里单独接一遍；
     # 只要对方提供的是 OpenAI 兼容的 chat completions 接口（绝大部分国内外供应商现在都有
     # 这个兼容模式，哪怕主推的是自己的原生接口），填一个 base_url + api key + 模型名就能用，
@@ -196,6 +203,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "grok": "XAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "minimax": "MINIMAX_API_KEY",
+    "minimax_cn": "MINIMAX_CN_API_KEY",
     "custom": "CUSTOM_API_KEY",
 }
 
@@ -215,6 +223,7 @@ PROVIDER_DEFAULT_MODEL: dict[str, str] = {
     # qwen-flash"，换成 qwen3.8-flash（当前最便宜的档位，见 PROVIDER_MODEL_PRESETS）。
     "openrouter": "qwen/qwen3.8-flash",
     "minimax": "MiniMax-M2",
+    "minimax_cn": "MiniMax-M2",
     # "custom" 没有默认模型——base_url 都是用户自己填的，猜不出对方那边有什么模型。
     "custom": "",
 }
@@ -269,6 +278,9 @@ PROVIDER_MODEL_PRESETS["qwen_intl"] = [
     ("qwen3-max", "Qwen3-Max —— 上一代旗舰"),
     ("qwen3.8-max", "Qwen3.8-Max —— 当前旗舰"),
 ]
+# 大陆版是同一套型号目录，只是走 api.minimaxi.com 这个不同的域名（见上面
+# PROVIDER_REGISTRY 里 "minimax_cn" 那条的注释）——型号名本身跟国际版完全一样。
+PROVIDER_MODEL_PRESETS["minimax_cn"] = PROVIDER_MODEL_PRESETS["minimax"]
 
 
 # 翻译这个用途文本量通常远大于分类/洞察（每道题的每个选项、每条开放题原文都要过一遍），

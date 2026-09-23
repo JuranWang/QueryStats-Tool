@@ -115,6 +115,10 @@ EN_MISC: dict[str, str] = {
     'Qwen（通义千问，国际/新加坡账号，DashScope International）': 'Qwen (international/Singapore account, DashScope International)',
     'OpenRouter（聚合网关，模型名要带厂商前缀，比如 qwen/qwen-turbo）': 'OpenRouter (gateway; use a provider prefix, e.g. qwen/qwen-turbo)',
     'MiniMax（国际/全球账号）': 'MiniMax (international/global account)',
+    'MiniMax（国际/全球账号，api.minimax.io）': 'MiniMax (international/global account, api.minimax.io)',
+    'MiniMax（大陆账号，api.minimaxi.com）': 'MiniMax (mainland China account, api.minimaxi.com)',
+    'MiniMax(国际)': 'MiniMax (Intl)',
+    'MiniMax(大陆)': 'MiniMax (China)',
     '自定义 API（任何 OpenAI 兼容接口，自己填 base_url）': 'Custom API (any OpenAI-compatible endpoint; enter a base_url)',
     'Qwen(大陆)': 'Qwen (China)',
     'Qwen(国际)': 'Qwen (Intl)',
@@ -185,6 +189,10 @@ NOT_TRANSLATED_MISC: set[str] = {
     'Qwen（通义千问，国际/新加坡账号，DashScope International）',  # 模块级常量/数据值，显示处翻译
     'OpenRouter（聚合网关，模型名要带厂商前缀，比如 qwen/qwen-turbo）',  # 模块级常量/数据值，显示处翻译
     'MiniMax（国际/全球账号）',  # 模块级常量/数据值，显示处翻译
+    'MiniMax（国际/全球账号，api.minimax.io）',  # 模块级常量/数据值，显示处翻译
+    'MiniMax（大陆账号，api.minimaxi.com）',  # 模块级常量/数据值，显示处翻译
+    'MiniMax(国际)',  # 模块级常量/数据值，显示处翻译
+    'MiniMax(大陆)',  # 模块级常量/数据值，显示处翻译
     '自定义 API（任何 OpenAI 兼容接口，自己填 base_url）',  # 模块级常量/数据值，显示处翻译
     'Qwen(大陆)',  # 模块级常量/数据值，显示处翻译
     'Qwen(国际)',  # 模块级常量/数据值，显示处翻译

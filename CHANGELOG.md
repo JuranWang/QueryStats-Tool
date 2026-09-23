@@ -7,6 +7,23 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-22 — v1.2.0
+
+- **新增 MiniMax 大陆账号支持** / **Added MiniMax mainland-China account support.**
+  - 之前 MiniMax 只接了国际/全球账号的域名（api.minimax.io），大陆账号的兼容域名
+    当时没能从官方文档确认下来，一直是已知空缺。这次重新查证（MiniMax 官方文档
+    及其大陆镜像 platform.minimaxi.com）确认大陆账号走的是 api.minimaxi.com
+    （注意域名比国际版多一个"i"，是完全不同的地址，不是同一个域名换路径），两边
+    key 互不通用——现在两个账号类型都是独立的供应商选项，跟 Qwen 大陆/国际的
+    拆分方式一致，选错了不会再套用错误的默认域名。
+    MiniMax previously only supported the international account domain
+    (api.minimax.io); the mainland-China compatible domain was an unconfirmed gap.
+    Re-verified against MiniMax's official docs (and its mainland mirror
+    platform.minimaxi.com): mainland accounts use api.minimaxi.com (note the extra
+    "i" — a genuinely different domain, not the same one with a different path), and
+    the two account types' keys are not interchangeable. Both are now separate
+    provider options, mirroring how Qwen's mainland/international split already works.
+
 ## 2026-09-22 — v1.1.0
 
 - **交叉分析改版：左右对称布局 + 多板块** / **Cross-analysis redesigned: symmetric layout + multiple blocks.**

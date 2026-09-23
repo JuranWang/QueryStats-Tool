@@ -171,7 +171,10 @@ PROVIDER_LABELS = {
     "qwen_intl": "Qwen（通义千问，国际/新加坡账号，DashScope International）",
     "grok": "Grok（xAI）",
     "openrouter": "OpenRouter（聚合网关，模型名要带厂商前缀，比如 qwen/qwen-turbo）",
-    "minimax": "MiniMax（国际/全球账号）",
+    # MiniMax 的大陆/国际账号是两个不同域名（api.minimaxi.com / api.minimax.io），
+    # key 互不通用，跟上面 Qwen 大陆/国际是同一类坑，拆成两个选项。
+    "minimax": "MiniMax（国际/全球账号，api.minimax.io）",
+    "minimax_cn": "MiniMax（大陆账号，api.minimaxi.com）",
     "custom": "自定义 API（任何 OpenAI 兼容接口，自己填 base_url）",
 }
 
@@ -238,7 +241,8 @@ PROVIDER_SHORT_LABELS = {
     "qwen_intl": "Qwen(国际)",
     "grok": "Grok",
     "openrouter": "OpenRouter",
-    "minimax": "MiniMax",
+    "minimax": "MiniMax(国际)",
+    "minimax_cn": "MiniMax(大陆)",
     "custom": "自定义",
 }
 

@@ -78,7 +78,8 @@ Qwen (DashScope，大陆账号/国际账号是两个选项，key 不通用)、Gr
 | Qwen（国际） | `DASHSCOPE_INTL_API_KEY` |
 | Grok | `XAI_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
-| MiniMax | `MINIMAX_API_KEY` |
+| MiniMax（国际/全球账号） | `MINIMAX_API_KEY` |
+| MiniMax（大陆账号） | `MINIMAX_CN_API_KEY` |
 | 自定义 API | `CUSTOM_API_KEY` + `CUSTOM_BASE_URL` |
 
 开放题逐条翻译走的是"翻译专用供应商"，可以在同一个设置页单独配一个更便宜的模型
