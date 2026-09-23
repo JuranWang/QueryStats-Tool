@@ -75,6 +75,10 @@ def test_get_provider_reads_settings_and_constructs_anthropic(tmp_path, monkeypa
 def test_get_provider_requires_configured_api_key(tmp_path, monkeypatch):
     conn = db.init_db(str(tmp_path / "survey.sqlite"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # 显式指定供应商，不依赖"什么都不配置时默认是哪个供应商"这件事——这条测试
+    # 要测的是"没配 key 该报错"，不是"默认供应商是 anthropic"，两件事不该耦合在
+    # 一起（后者以后可能因为别的原因变化，不该连带把这条测试测坏或测假）。
+    db.set_setting(conn, "llm_provider", "anthropic")
 
     with pytest.raises(RuntimeError, match="缺少环境变量 ANTHROPIC_API_KEY"):
         get_provider(conn)
