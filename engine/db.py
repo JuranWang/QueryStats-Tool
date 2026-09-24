@@ -153,8 +153,20 @@ def init_db(db_path: str) -> sqlite3.Connection:
     still serializes reruns for a given session — there is no genuine concurrent access to
     this connection from two threads at once — so relaxing the check is safe for this
     single-user, single-process tool.
+
+    真实反馈的严重 bug：同事第一次 clone 下来跑，直接报
+    `sqlite3.OperationalError: unable to open database file`。根源是 `data/`
+    这整个目录从来没有被 git 追踪过（`.gitignore` 排除的是 `data/app.db` 这些
+    具体文件，但从来没有哪个文件把 `data/` 这个目录本身带进 git 历史里），全新
+    `git clone` 下来的仓库根本没有 `data/` 这个目录；sqlite3 不会自动创建数据库
+    文件所在的父目录（只会创建文件本身），目录不存在就直接抛这个错。这个 bug
+    之前一直没暴露，是因为开发机上 `data/` 目录很早就手动建过、一直留到现在，
+    每次都当"已经存在"用——对任何全新 clone 的人都必现。别的几个子目录
+    （uploads/exports/backups）各自的调用点已经有 `mkdir(parents=True,
+    exist_ok=True)`，唯独这里（整个 app 最先被调用、最上游的入口）没有。
     """
 
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row

@@ -7,6 +7,34 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-24 — v1.3.1
+
+- **紧急修复：全新 clone 下来第一次跑必现崩溃** / **Critical fix: every fresh clone
+  crashed on first run.**
+  - 真实反馈：同事第一次 clone 仓库、装好依赖跑起来，直接报
+    `sqlite3.OperationalError: unable to open database file`。
+    Reported: a teammate's very first run after cloning and installing
+    dependencies crashed immediately with `sqlite3.OperationalError: unable to
+    open database file`.
+  - 根源：`data/` 这整个目录从来没有被 git 追踪过（`.gitignore` 排除的是
+    `data/app.db` 这些具体文件，但目录本身也从没进过 git 历史），全新 clone 下来
+    根本没有这个目录；`sqlite3.connect()` 不会自动创建数据库文件的父目录，只会
+    创建文件本身，目录不存在就直接报错。这个 bug 之前一直没暴露，纯粹是因为
+    所有人的开发机上 `data/` 目录很早就存在、一直当"理所当然"用，对任何全新
+    clone 的人是 100% 必现。
+    Root cause: `data/` had never been tracked by git at all (`.gitignore`
+    excludes specific files under it, but nothing ever committed the directory
+    itself), so a fresh clone simply has no `data/` folder. `sqlite3.connect()`
+    creates the database *file* but never its parent directory, so this crashes
+    every time the folder doesn't already exist. It went unnoticed only because
+    every existing developer's machine already had a long-lived `data/` folder
+    taken for granted — this was a 100% guaranteed crash for anyone cloning fresh.
+  - 修复：`engine/db.py` 的 `init_db()`（全 app 最先被调用的入口）现在会在连接
+    数据库之前先把父目录建好，新增回归测试专门模拟"目录还不存在"的场景复现过。
+    Fixed: `init_db()` (the very first thing the whole app calls) now creates the
+    parent directory before connecting. Added a regression test that specifically
+    simulates the "directory doesn't exist yet" scenario to reproduce this.
+
 ## 2026-09-23 — v1.3.0
 
 - **跨问卷对比：标题写清楚题干、颜色改用标准调色板、图例可编辑** /

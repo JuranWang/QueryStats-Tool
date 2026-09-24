@@ -108,6 +108,24 @@ def test_init_db_creates_all_ddl_tables_and_exact_columns(tmp_path):
     # IF NOT EXISTS makes repeat initialization safe.
     second_conn = init_db(str(tmp_path / "survey.sqlite"))
     second_conn.close()
+
+
+def test_init_db_creates_missing_parent_directories(tmp_path):
+    """真实反馈的严重 bug：同事第一次 clone 仓库跑起来，直接报
+    sqlite3.OperationalError: unable to open database file。根源是 data/ 这个
+    目录从来没被 git 追踪过，全新 clone 下来根本不存在这个目录，sqlite3 不会
+    自动创建数据库文件的父目录。这里专门模拟"全新 clone、data/ 目录还不存在"
+    这个场景（不是用 tmp_path 本身——那个目录 pytest 已经建好了，测不出这个 bug），
+    确认 init_db 自己会把缺失的父目录建起来，不需要调用方提前手动建。
+    """
+
+    nested_db_path = tmp_path / "fresh_clone" / "data" / "app.db"
+    assert not nested_db_path.parent.exists()
+
+    conn = init_db(str(nested_db_path))
+
+    assert nested_db_path.exists()
+    conn.close()
     conn.close()
 
 
