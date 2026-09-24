@@ -6,6 +6,7 @@ from engine.i18n import t
 
 import json
 import os
+import re
 import sqlite3
 from typing import Protocol
 
@@ -32,10 +33,22 @@ class LLMProvider(Protocol):
         ...
 
 
-def _parse_json_object(raw_text: str) -> dict:
-    """Parse a JSON object, tolerating explanatory text around the object."""
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
-    stripped = raw_text.strip()
+
+def _parse_json_object(raw_text: str) -> dict:
+    """Parse a JSON object, tolerating explanatory text around the object.
+
+    真实反馈复现的坑：MiniMax-M2 这类"推理模型"会在正式回答前先输出一段
+    `<think>...</think>` 思维链，这段文字本身经常会提到"要输出 JSON""比如
+    {...}"这类话——如果思维链里恰好出现了花括号，原来"找第一个 { 到最后一个 }"
+    这个朴素算法会把思维链里的花括号也框进去，切出来的这一段混杂了大段说明
+    文字，不是一个合法的 JSON，直接解析失败。这里先把整段 `<think>...</think>`
+    去掉再做花括号匹配，不管这个模型是不是"推理模型"都不受影响（普通模型的
+    回答里本来就不会有这个标签，去掉一个不存在的东西是无操作）。
+    """
+
+    stripped = _THINK_BLOCK_RE.sub("", raw_text).strip()
     candidates = [stripped]
     start = stripped.find("{")
     end = stripped.rfind("}")

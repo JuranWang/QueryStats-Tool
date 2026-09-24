@@ -40,6 +40,28 @@ def test_anthropic_provider_extracts_json_from_markdown_fence():
         assert client_class.return_value.messages.create.call_count == 1
 
 
+def test_extracts_json_when_think_block_mentions_braces():
+    """真实反馈复现的 bug：MiniMax-M2 这类推理模型会先输出一段
+    <think>...</think> 思维链，这段文字里经常会提到"要输出的 JSON 是
+    {...}"这种话——原来"找第一个 { 到最后一个 }"的朴素算法会把思维链里
+    提到的花括号也框进去，切出来的是一段混杂大量说明文字的非法 JSON，
+    解析失败。真机验证过：这份原文是真实 API 调用返回的实际内容，不是
+    编出来的测试数据。"""
+
+    from engine.llm_provider import _parse_json_object
+
+    raw_text = (
+        "<think>\n"
+        'The user wants me to output only a valid JSON object with no other '
+        'text. They want {"ok": true}\n\n'
+        "I should output exactly that JSON and nothing else.\n"
+        "</think>\n\n"
+        '{"ok": true}'
+    )
+
+    assert _parse_json_object(raw_text) == {"ok": True}
+
+
 def test_anthropic_provider_retries_once_then_raises_for_invalid_json():
     with patch("engine.llm_provider.anthropic.Anthropic") as client_class:
         client_class.return_value.messages.create.side_effect = [
