@@ -7,6 +7,29 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-23 — v1.2.2
+
+- **修复：同一道多选题在问卷里循环问了好几遍时，第 2/3 轮会被误判成独立单选题**
+  / **Fixed: a multi-select question asked multiple times in a loop (e.g. once per
+  product-grade framing) had its 2nd/3rd occurrence misdetected as separate
+  single-choice questions.**
+  - 真实反馈：一份问卷里"以下这些东西，你会把哪些算作'胶'？"这道多选题按"医用级/
+    母婴级/食用级硅胶"分别问了三遍，原始表头逐字重复；pandas 读取时会给第 2、3 次
+    出现的列名自动追加 ".1"/".2" 去重后缀，这个后缀被现有的"排除整句标点"规则误判
+    成"看起来像一句话"，导致第 2、3 轮的选项列整组从多选题分组里掉出去，退化成
+    9×2 道独立单选题（取值显示成未翻译的原始 0/1）。
+    Reported bug: a survey asked the same multi-select question three times (once
+    per product-grade framing), producing identical raw headers. pandas
+    auto-appends ".1"/".2" dedup suffixes to the 2nd/3rd occurrences, which the
+    existing "looks like a full sentence" exclusion rule misfired on (it treats any
+    period as sentence-ending punctuation), dropping those columns out of grouping
+    entirely and degrading them into raw, untranslated 0/1 single-choice questions.
+  - 修好之后，三轮循环各自正确合并成一道独立的多选题，选项名干净、不带技术性
+    后缀；已用真实数据验证（Python 函数级 + 新增回归测试 + 完整真机浏览器复现）。
+    Each loop iteration now correctly merges into its own independent multi-select
+    question with clean option labels. Verified against the real data at the
+    function level, with a new regression test, and end-to-end in a real browser.
+
 ## 2026-09-23 — v1.2.1
 
 - **紧急修复：新建问卷分析会覆盖上一份问卷** / **Critical fix: creating a new survey analysis could overwrite the previous one.**

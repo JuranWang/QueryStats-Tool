@@ -329,6 +329,45 @@ def test_detect_multi_select_groups_recognizes_credamo_style_without_summary_col
     assert summary_columns == set()
 
 
+def test_detect_multi_select_groups_handles_looped_question_with_pandas_dedup_suffix():
+    """真实反馈的 bug：同一道多选题在问卷里循环问了好几遍（比如按"医用级/母婴级/
+    食用级硅胶"分别问一遍同一组选项），原始表头逐字重复，pandas 读取时会给第 2、3
+    次出现的列名自动追加 ".1"/".2" 去重后缀。这个后缀之前会被"suffix 里不能带句号"
+    的排除规则误判掉，导致第 2、3 轮的选项列全部从分组里掉出去、退化成独立单选题
+    （用真实数据复现过，不是假设）。"""
+
+    df = pd.DataFrame(
+        {
+            "你会把哪些算作胶-热熔胶": ["1", "0", "1"],
+            "你会把哪些算作胶-硅胶": ["0", "1", "1"],
+            "你会把哪些算作胶-热熔胶.1": ["0", "0", "1"],
+            "你会把哪些算作胶-硅胶.1": ["1", "1", "0"],
+            "你会把哪些算作胶-热熔胶.2": ["1", "1", "0"],
+            "你会把哪些算作胶-硅胶.2": ["0", "0", "1"],
+            "respondent_id": ["r1", "r2", "r3"],
+        }
+    )
+
+    groups, summary_columns = detect_multi_select_groups(df)
+
+    # 三轮循环各自独立成组，不能合并成一组 6 选项（那样会把三个不同场景问的题
+    # 错误地当成同一道题分析），每组也不能漏掉任何一轮。
+    assert set(groups.keys()) == {
+        "你会把哪些算作胶",
+        "你会把哪些算作胶.1",
+        "你会把哪些算作胶.2",
+    }
+    assert groups["你会把哪些算作胶"] == ["你会把哪些算作胶-热熔胶", "你会把哪些算作胶-硅胶"]
+    assert groups["你会把哪些算作胶.1"] == ["你会把哪些算作胶-热熔胶.1", "你会把哪些算作胶-硅胶.1"]
+    assert groups["你会把哪些算作胶.2"] == ["你会把哪些算作胶-热熔胶.2", "你会把哪些算作胶-硅胶.2"]
+    assert summary_columns == set()
+
+    # 选项名要干净，不能带着 ".1"/".2" 这种技术性后缀（看着像小数点，会被误以为
+    # 是数据错误）。
+    labels_round2 = option_labels_for_group(groups["你会把哪些算作胶.1"])
+    assert set(labels_round2.values()) == {"热熔胶", "硅胶"}
+
+
 def test_detect_multi_select_groups_ignores_non_boolean_lookalikes():
     # 价格区间"0-100"这种正常单选题，即使名字里带短横线，取值不是布尔值，不该被分组。
     df = pd.DataFrame(

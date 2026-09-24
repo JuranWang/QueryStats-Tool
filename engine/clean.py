@@ -180,15 +180,47 @@ def _find_matching_open_paren(stripped: str) -> int | None:
     return None
 
 
+_PANDAS_DEDUP_SUFFIX_RE = re.compile(r"(\.\d+)$")
+
+
+def _strip_pandas_dedup_suffix(text: str) -> str:
+    """摘掉 pandas 读重复列名时自动追加的 ".1"/".2" 这类去重后缀（如果有的话）。
+
+    只在摘掉之后剩下的文字不是空的时候才摘——万一某个真实选项名恰好整段就是
+    "1.5"这种数字，摘完不能变成空字符串，退回原文比返回空字符串更安全。
+    """
+
+    match = _PANDAS_DEDUP_SUFFIX_RE.search(text)
+    if match and text[: match.start()].strip():
+        return text[: match.start()]
+    return text
+
+
 def _multi_group_prefix(column: str) -> str | None:
     """如果这一列名字符合"题干 (选项)"（Tally 那种）或"题干-选项"（见数那种）这种
     多选题拆分列的常见命名规律，返回它的题干前缀；不符合返回 None。
 
     这只是"名字长得像"的初筛，真正判定要不要分组还得看 detect_multi_select_groups 里
     的取值检查——不然价格区间"0-100"这种正常单选题也会被误判。
+
+    真实数据复现过的 bug：同一道多选题在问卷里循环问了好几遍（比如按"医用级/母婴级/
+    食用级硅胶"分别问一遍同一组选项），原始表头逐字重复，pandas 读取时会自动给第 2、
+    第 3 次出现的列名追加 ".1"、".2" 这种去重后缀（pandas 自己的行为，这份问卷平台
+    导出的原始文件里并没有这个后缀）。这个后缀落在整个列名最末尾，会跟下面"suffix
+    里不能带句号/问号"这条排除规则撞在一起——把 ".1" 也当成"看起来像整句话的句号"
+    误判掉，导致第 2、3 轮问的这些选项列全部从多选题分组里掉出去，退化成一堆独立的
+    单选题（每一列的取值就是原始的 0/1，也不会翻译成选项名）。这里先把这种去重后缀
+    摘掉，摘出来的题干前缀用于判断"像不像多选拆分列"和后续取值检查，最后把后缀原样
+    缀回前缀（不能丢），这样循环问的第 2、3 轮会各自单独成组，不会跟第 1 轮的列混
+    在一起变成一道选项数翻 2-3 倍的多选题（那样会把三个不同场景问的题错误合并成一题）。
     """
 
     stripped = column.rstrip()
+    dedup_suffix_match = _PANDAS_DEDUP_SUFFIX_RE.search(stripped)
+    dedup_suffix = ""
+    if dedup_suffix_match:
+        dedup_suffix = dedup_suffix_match.group(1)
+        stripped = stripped[: dedup_suffix_match.start()]
     if stripped.endswith(")"):
         # 找跟最后这个 ")" 配对的"(" ——不能用 rindex(" (") 直接找最后一个左括号：
         # 选项文字自己带括号说明的时候（比如"Warm air blown through vents/ducts
@@ -199,13 +231,13 @@ def _multi_group_prefix(column: str) -> str | None:
         # 才能正确处理这种嵌套括号。
         open_index = _find_matching_open_paren(stripped)
         if open_index is not None and open_index > 0 and stripped[open_index - 1] == " ":
-            return stripped[:open_index].rstrip()
+            return stripped[:open_index].rstrip() + dedup_suffix
     if "-" in stripped:
         prefix, _, suffix = stripped.rpartition("-")
         # 短横线后面那段太长、或者带明显的整句标点（问号/句号），更像是题干本身
         # 凑巧带了个短横线，不是"题干-选项"这种拆分格式，不当分组前缀处理。
         if prefix and suffix and len(suffix) <= 30 and not any(p in suffix for p in "?？.。"):
-            return prefix
+            return prefix + dedup_suffix
     return None
 
 
@@ -217,6 +249,12 @@ def option_labels_for_group(cols: list[str]) -> dict[str, str]:
     - 见数那种"题干-选项"共享前缀——找公共前缀里最后一个分隔符，切掉前缀部分。
     如果不认括号这种格式，会退化成"整列原始题干当选项名"，图表和翻译都会拿一整句题干
     当选项显示，又长又不会被正确翻译（之前真出过这个 bug）。
+
+    真实数据复现过的另一个 bug：同一道多选题在问卷里循环问了好几遍时，pandas 会给
+    第 2、3 轮的原始列名自动追加 ".1"/".2" 这种去重后缀（见 `_multi_group_prefix`
+    的说明）——这个后缀落在切完前缀之后的选项名最末尾，如果不摘掉，选项名会显示成
+    "热熔胶.1"这种带着技术性后缀的样子，看着像小数点，容易被误以为是数据错误。
+    这里在两种格式各自算完选项名之后，统一摘掉这条尾巴。
     """
 
     if len(cols) < 2:
@@ -234,7 +272,7 @@ def option_labels_for_group(cols: list[str]) -> dict[str, str]:
             else:
                 option = stripped
             result[c] = option or c
-        return result
+        return {c: _strip_pandas_dedup_suffix(label) for c, label in result.items()}
 
     common = os.path.commonprefix(cols)
     cut = ""
@@ -244,7 +282,10 @@ def option_labels_for_group(cols: list[str]) -> dict[str, str]:
             cut = common[: idx + 1]
     if not cut:
         return {c: c for c in cols}
-    return {c: (c[len(cut):].strip() or c) for c in cols}
+    return {
+        c: _strip_pandas_dedup_suffix(c[len(cut):].strip() or c)
+        for c in cols
+    }
 
 
 def detect_multi_select_groups(df: pd.DataFrame) -> tuple[dict[str, list[str]], set[str]]:
