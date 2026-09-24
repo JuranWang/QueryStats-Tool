@@ -83,7 +83,10 @@ def test_build_horizontal_bar_config_uses_existing_count_pct_labels():
     assert bar_colors == OPTION_COLOR_PALETTE[:2]
 
 
-def test_build_multi_series_config_uses_fixed_color_scale_and_limit():
+def test_build_multi_series_config_uses_option_palette_by_default():
+    # 真实反馈："这两个颜色差异太小，好像不是我们之前规定的颜色"——这个函数原来
+    # 固定用只有四种蓝色深浅的窄色板，跟报告里其它图表统一用的十色 OPTION_COLOR_PALETTE
+    # 不是同一套，改成默认也用这一套，跟其它图表视觉一致、对比度也够。
     series = [
         {"name": "组1", "data": [10.0, 20.0]},
         {"name": "组2", "data": [30.0, 40.0]},
@@ -91,11 +94,8 @@ def test_build_multi_series_config_uses_fixed_color_scale_and_limit():
     config = build_multi_series_chart_config(["A", "B"], series, "组间对比", "footer")
 
     assert config["title"] == {"text": "组间对比", "left": "center", "textStyle": {"color": "#245785"}}
-    assert config["color"] == ["#1F3864", "#4B668E"]
-    assert [item["itemStyle"]["color"] for item in config["series"]] == [
-        "#1F3864",
-        "#4B668E",
-    ]
+    assert config["color"] == OPTION_COLOR_PALETTE[:2]
+    assert [item["itemStyle"]["color"] for item in config["series"]] == OPTION_COLOR_PALETTE[:2]
     assert config["_footer"] == "footer"
 
     with pytest.raises(ValueError, match="At most 4"):
@@ -105,3 +105,15 @@ def test_build_multi_series_config_uses_fixed_color_scale_and_limit():
             "title",
             "footer",
         )
+
+
+def test_build_multi_series_config_accepts_custom_palette_for_minimalist_theme():
+    # 界面切到"极简"风格时，调用方（app.py 的 _active_chart_palette()）会传
+    # OPTION_COLOR_PALETTE_MINIMALIST 进来，图表颜色要跟着换，不能一直用默认色板。
+    series = [{"name": "组1", "data": [10.0]}, {"name": "组2", "data": [20.0]}]
+    custom_palette = ["#111111", "#222222", "#333333"]
+
+    config = build_multi_series_chart_config(["A"], series, "标题", "footer", color_palette=custom_palette)
+
+    assert config["color"] == ["#111111", "#222222"]
+    assert [item["itemStyle"]["color"] for item in config["series"]] == ["#111111", "#222222"]

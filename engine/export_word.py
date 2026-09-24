@@ -26,7 +26,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
-from engine.chart_spec import SERIES_COLORS, OPTION_COLOR_PALETTE, TITLE_COLOR, choose_chart_type
+from engine.chart_spec import OPTION_COLOR_PALETTE, TITLE_COLOR, choose_chart_type
 
 
 QUESTION_TYPE_ZH = {
@@ -359,11 +359,17 @@ def render_grouped_bar_chart_image(
     categories: list[str], series: list[dict], tmp_path: str,
     title: str | None = None, color_palette: list[str] | None = None,
 ) -> None:
-    """每个维度下并排画各问卷的占比，图例直接用默认色块，不复用饼图的排版逻辑。"""
+    """每个维度下并排画各问卷的占比，图例直接用默认色块，不复用饼图的排版逻辑。
+
+    真实反馈："这两个颜色差异太小"——默认色板改成跟网页上、跟其它图表导出统一的
+    OPTION_COLOR_PALETTE（不再是只有四种蓝色深浅的 SERIES_COLORS），保存/下载出来
+    的这张图跟网页上看到的颜色也保持一致（调用方 app.py 传的是同一份
+    _active_chart_palette() 结果）。
+    """
 
     plt.rcParams["font.sans-serif"] = [_chart_font_family(), "DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
-    colors = color_palette or SERIES_COLORS
+    colors = color_palette or OPTION_COLOR_PALETTE
     figure, axis = plt.subplots(figsize=(max(8, len(categories) * 0.9), 5))
     try:
         positions = np.arange(len(categories))

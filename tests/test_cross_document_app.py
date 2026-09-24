@@ -21,6 +21,7 @@ FUNCTION_NAMES = {
     'render_crosstab_side', '_multi_select_list_series', 'assign_first_group',
     'all_matching_groups', 'dimension_stats_result', '_compute_crosstab_block_result',
     '_persist_crosstab_blocks', '_crosstab_blocks_payload', '_crosstab_state_payload', '_restore_extras',
+    'render_label_override_editor',
 }
 FUNCTION_SOURCE = '\n\n'.join(
     ast.get_source_segment(SOURCE, node) for node in TREE.body
@@ -43,6 +44,8 @@ def render_chart(chart_type, config, key):
     st.session_state["__TEST__charts"].append((chart_type, config, key))
 def _grouped_bar_snapshot_png_for_save(*args):
     return b"test png"
+def _active_chart_palette():
+    return None
 def _render_copy_image_button(png, key):
     st.caption(key)
 def render_image_attachments_trigger(q_no):
@@ -63,6 +66,7 @@ def functions(state=None):
     set_lang("zh")
     namespace = dict(pd=pd, stats=stats, clean=clean, chart_spec=chart_spec, persistence=persistence,
                      db=db, t=t, json=json, base64=base64, hashlib=hashlib,
+                     _active_chart_palette=lambda: None,
                      st=SimpleNamespace(session_state={} if state is None else state))
     exec(FUNCTION_SOURCE, namespace)
     return namespace

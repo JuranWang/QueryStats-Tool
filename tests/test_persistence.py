@@ -6,6 +6,7 @@ import pytest
 from engine.db import (
     add_document,
     create_project,
+    get_test_method,
     init_db,
     list_conclusions,
     list_documents,
@@ -304,6 +305,44 @@ def test_update_analysis_overwrites_in_place_without_duplicating_conclusions(tmp
     assert result["title"] == "改过的标题"
     assert [c["text"] for c in list_conclusions(conn, project_id)] == ["第二版结论"]
     assert read_autosave(conn, document_id) is None
+    conn.close()
+
+
+def test_update_analysis_accepts_test_method_loaded_back_from_get_test_method(tmp_path):
+    """真实反馈的严重 bug：点"保存"直接报错"set_test_method() got multiple values
+    for argument 'project_id'"。根源是 get_test_method()（`SELECT * ... dict(row)`）
+    返回的字典里天生带着 project_id 这个外键列；一份"打开历史记录"的文档，
+    st.session_state["test_method"] 就是从这条路径读回来的，再拿去调用
+    update_analysis 时，字典里的 project_id 会跟已经按位置传的 project_id 参数
+    冲突，对任何"先打开、再手动保存"的文档必现。这里直接用 get_test_method()
+    的真实返回值（不是手写一份干净字典）去调用 update_analysis，复现真实路径。
+    """
+
+    conn = init_db(str(tmp_path / "reload_save.sqlite"))
+    project_id = _project(conn)
+    df_v1 = pd.DataFrame({"single_col": ["A", "B"]})
+    units_v1 = [
+        {"kind": "single", "section": "正式", "title": "Pick one", "display_no": "Q1", "columns": ["single_col"]},
+    ]
+    clean_test_method = {
+        "platform_source": "Prolific", "is_branched": False,
+        "branch_count": None, "screen_out_rule": None, "skip_logic_note": None,
+    }
+    document_id = save_analysis(
+        conn, project_id, units_v1, df_v1, {}, {}, clean_test_method, ["第一版结论"], "test.csv",
+    )
+
+    # 这就是"打开历史记录"时 app.py 实际拿到的 test_method 形状——带着 project_id。
+    loaded_test_method = get_test_method(conn, project_id)
+    assert "project_id" in loaded_test_method
+
+    # 不能抛 TypeError。
+    update_analysis(
+        conn, document_id, project_id, units_v1, df_v1, {}, {},
+        loaded_test_method, ["第二版结论"], title="改过的标题",
+    )
+
+    assert load_analysis(conn, document_id)["title"] == "改过的标题"
     conn.close()
 
 

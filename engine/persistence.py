@@ -168,7 +168,14 @@ def save_analysis(
     _write_questions_and_responses(
         conn, document_id, units, df_all, screen_fail_values, translation_cache
     )
-    set_test_method(conn, project_id, **test_method)
+    # 真实反馈的严重 bug："手动保存"点了直接报错 set_test_method() got multiple
+    # values for argument 'project_id'。根源：test_method 这个字典如果是从
+    # load_analysis() 读回来的（get_test_method() 内部是 `SELECT * ... dict(row)`，
+    # 会把 project_id 这个外键列也一起带进字典里），这里 **test_method 展开的时候
+    # 会跟前面已经按位置传的 project_id 撞上，Python 判定成"同一个参数传了两次"
+    # 直接抛异常。project_id 这个字段本来就跟"哪个项目"是同一件事，不是真正的
+    # "测试方法"设置，调用方在这里已经显式传了一次，展开前先把它从字典里摘掉。
+    set_test_method(conn, project_id, **{k: v for k, v in test_method.items() if k != "project_id"})
     replace_conclusions(conn, project_id, conclusions)
     write_document_extras(conn, document_id, extras or {})
     touch_project(conn, project_id)
@@ -210,7 +217,12 @@ def update_analysis(
     )
     if title is not None:
         rename_document(conn, document_id, title)
-    set_test_method(conn, project_id, **test_method)
+    # 同一个坑，见 save_analysis() 里的说明：test_method 如果是从 load_analysis()
+    # 读回来的，字典里会带着 project_id 这个外键列，跟下面已经按位置传的 project_id
+    # 撞上会直接抛 TypeError——"手动保存"真机测试复现过这个 bug（点保存直接弹出
+    # "手动保存失败：set_test_method() got multiple values for argument
+    # 'project_id'"，对已经从历史记录打开过的文档，点"保存"必现）。
+    set_test_method(conn, project_id, **{k: v for k, v in test_method.items() if k != "project_id"})
     replace_conclusions(conn, project_id, conclusions)
     write_document_extras(conn, document_id, extras or {})
     touch_document(conn, document_id)

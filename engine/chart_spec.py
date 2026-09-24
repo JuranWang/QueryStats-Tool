@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 
-PRIMARY_COLOR = "#1F3864"
-SERIES_COLORS = ["#1F3864", "#4B668E", "#7E91AD", "#A8B7CB"]
-
 # 图表标题统一用这个颜色（ECharts 的 title.textStyle.color，matplotlib 的
 # figure.suptitle(color=...)）——用户指定的色号，跟下面选项调色板是配套的一次改版。
 TITLE_COLOR = "#245785"
@@ -148,25 +145,36 @@ def build_chart_config(
 
 
 def build_multi_series_chart_config(
-    categories: list[str], series: list[dict], title: str, footer: str
+    categories: list[str], series: list[dict], title: str, footer: str,
+    color_palette: list[str] | None = None,
 ) -> dict:
-    """Build a grouped horizontal bar chart with the fixed four-color scale."""
+    """Build a grouped horizontal bar chart, using the same option color palette
+    as every other chart in the report.
 
-    if len(series) > len(SERIES_COLORS):
-        raise ValueError("At most 4 series are supported by the SOP color scale")
+    真实反馈："这两个颜色差异太小，好像不是我们之前规定的颜色"——这个函数原来
+    固定用 SERIES_COLORS 这一套只有四个蓝色深浅变化的窄色板，跟报告里其它图表
+    统一用的十色 OPTION_COLOR_PALETTE（蓝/浅蓝/灰/绿/黄……色相互相拉开，一眼就
+    能分清）不是同一套，两个系列之间对比度也不够。改成默认也用 OPTION_COLOR_PALETTE
+    （不传 color_palette 时），保持跟其它图表视觉一致；界面切到"极简"风格时，
+    调用方按跟别处一样的规矩传 OPTION_COLOR_PALETTE_MINIMALIST 进来。
+    """
 
+    if len(series) > 4:
+        raise ValueError("At most 4 series are supported by a grouped comparison chart")
+
+    active_palette = color_palette or OPTION_COLOR_PALETTE
     configured_series = [
         {
             "name": item["name"],
             "type": "bar",
             "data": item["data"],
-            "itemStyle": {"color": SERIES_COLORS[index]},
+            "itemStyle": {"color": active_palette[index % len(active_palette)]},
         }
         for index, item in enumerate(series)
     ]
     return {
         "title": {"text": title, "left": "center", "textStyle": {"color": TITLE_COLOR}},
-        "color": SERIES_COLORS[: len(series)],
+        "color": [active_palette[i % len(active_palette)] for i in range(len(series))],
         "legend": {"data": [item["name"] for item in series]},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
         "xAxis": {"type": "value"},

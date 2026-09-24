@@ -996,9 +996,13 @@ def _compute_crosstab_block_result(left_ctx: dict, right_ctx: dict) -> dict:
             rows.append(dimension_stats_result(group_col, ctx["group_order"]))
             totals.append(int(group_col.notna().sum()))
         result_table = stats.compare_choice_stats(rows[0], rows[1], left_label, right_label)
+        # 真实反馈："把标题写出来，标明是什么问题和什么问题交叉分析"——原来这里只写了
+        # 题号（比如"Q24"），不知道题号具体是哪道题的话，光看标题完全看不出这次对比
+        # 的是什么。question_label 是"题号｜题干原文"这个完整字符串（跟同文档路径的
+        # 标题一直用的是同一种格式），换成它就不用另外再拼一遍题干。
         title = t("跨问卷对比｜{label_a}·{question_a} vs {label_b}·{question_b}",
-                  label_a=left_label, question_a=left_ctx["unit"]["display_no"],
-                  label_b=right_label, question_b=right_ctx["unit"]["display_no"])
+                  label_a=left_label, question_a=left_ctx["question_label"],
+                  label_b=right_label, question_b=right_ctx["question_label"])
         categories = result_table.index.tolist()
         series = []
         for label, result_rows in zip((left_label, right_label), rows):
@@ -1008,6 +1012,7 @@ def _compute_crosstab_block_result(left_ctx: dict, right_ctx: dict) -> dict:
             categories, series, title,
             t("有效样本：{label_a} N={n_a}；{label_b} N={n_b}",
               label_a=left_label, n_a=totals[0], label_b=right_label, n_b=totals[1]),
+            color_palette=_active_chart_palette(),
         )
         chart_config["xAxis"]["axisLabel"] = {"formatter": "{value}%"}
     return {"kind": "same_doc" if same_doc else "cross_doc", "title": title, "table": result_table,
@@ -3103,9 +3108,33 @@ with st.container(key="section_paper_8"):
             if result is not None:
                 st.markdown(f"**{result['title']}**")
                 table = result["table"]
-                st.dataframe(table.rename_axis(index=t("对比题答案"), columns=t("分组")) if result["kind"] == "same_doc" else table)
+                legend_q_no = f"crosstab_block_{block_id}"
+                if result["kind"] == "same_doc":
+                    st.dataframe(table.rename_axis(index=t("对比题答案"), columns=t("分组")))
+                else:
+                    # 真实反馈："下面的图例文字我需要可编辑"——跨问卷对比默认用文档
+                    # 标题（经常是原始文件名，比如"硅胶专利测试.csv"）当图例/表头，
+                    # 不一定是想给别人看的说法，复用现成的"编辑图表上显示的文字"
+                    # 这套机制（跟单选/多选题图表同一个函数），改的只是显示文字，
+                    # 不影响背后真实引用的是哪份文档、哪道题。
+                    overridden = render_label_override_editor(
+                        legend_q_no,
+                        [{"option": result["left_label"]}, {"option": result["right_label"]}],
+                    )
+                    display_left_label = overridden[0]["option"]
+                    display_right_label = overridden[1]["option"]
+                    label_map = {result["left_label"]: display_left_label, result["right_label"]: display_right_label}
+                    st.dataframe(table.rename(columns=label_map))
                 if result["chart_config"] is not None:
-                    config = result["chart_config"]
+                    # 复制一份再改，不能动 result["chart_config"] 本身——那是"生成
+                    # 交叉分析"那一刻算好存起来的结果，图例文字覆盖是纯展示层的东西，
+                    # 不应该反过来改动已保存的计算结果（跟 render_chart 自己"传副本"
+                    # 的理由一样）。
+                    config = json.loads(json.dumps(result["chart_config"]))
+                    if result["kind"] != "same_doc":
+                        config["legend"]["data"] = [label_map.get(n, n) for n in config["legend"]["data"]]
+                        for series_item in config["series"]:
+                            series_item["name"] = label_map.get(series_item["name"], series_item["name"])
                     _, dl_col, cp_col = st.columns([8, 1, 1])
                     png = _grouped_bar_snapshot_png_for_save(f"xtb_{block_id}", config["yAxis"]["data"], config["series"], result["title"])
                     with dl_col:
@@ -3113,12 +3142,12 @@ with st.container(key="section_paper_8"):
                                            icon=":material/download:", key=f"xtb_{block_id}_download", help=t("下载这张图表"))
                     with cp_col:
                         _render_copy_image_button(png, key=f"xtb_{block_id}_copy")
-                    # render_chart 会改标题并 pop footer，传副本，不能改掉已经保存的结果。
+                    # render_chart 会改标题并 pop footer，再传一份副本，不能动上面
+                    # 刚生成、给 PNG 用的这份 config。
                     render_chart("bar_h", json.loads(json.dumps(config)), key=f"xtb_{block_id}_chart")
                 st.session_state["crosstab_history"][result["title"]] = table
-                q_no_for_images = f"crosstab_block_{block_id}"
-                render_image_attachments_trigger(q_no_for_images)
-                render_image_attachments_grid(q_no_for_images)
+                render_image_attachments_trigger(legend_q_no)
+                render_image_attachments_grid(legend_q_no)
     if delete_block_id is not None:
         st.session_state["crosstab_blocks"] = [b for b in st.session_state["crosstab_blocks"] if b["id"] != delete_block_id]
         _persist_crosstab_blocks()

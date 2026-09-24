@@ -165,7 +165,19 @@ def run_browser(root, url):
         select_key("xtb_2_right_doc", "验收项目2 · 验收问卷2 · #2")
         click_key("xtb_2_run")
         saved = wait_saved(lambda x: len(x["crosstab_blocks"]) == 2 and x["crosstab_blocks"][1]["result"] is not None)
-        assert saved["crosstab_blocks"][1]["result"]["kind"] == "cross_doc"
+        cross_doc_result = saved["crosstab_blocks"][1]["result"]
+        assert cross_doc_result["kind"] == "cross_doc"
+
+        # 真实反馈"标题只有题号看不出对比的是什么"——标题必须带题干原文，不能只有
+        # "Q1"这种题号。
+        assert "偏好" in cross_doc_result["title"], \
+            f"标题里没有题干原文，看不出对比的是哪道题：{cross_doc_result['title']!r}"
+
+        # 真实反馈"这两个颜色差异太小，好像不是我们之前规定的颜色"——落库的图表配置
+        # 里颜色必须是报告统一用的十色调色板前两色，不能是旧的窄幅蓝色系。
+        chart_colors = cross_doc_result["chart_config"]["color"]
+        assert chart_colors == ["#2E5797", "#5B9BD5"], f"颜色不对：{chart_colors}"
+
         with page.expect_download() as download:
             click_key("xtb_2_download")
         download.value.save_as(root / "download.png")
@@ -179,11 +191,38 @@ def run_browser(root, url):
         block2.scroll_into_view_if_needed()
         page.screenshot(path=str(root / "cross_doc.png"))
 
+        # 真实反馈"下面的图例文字我需要可编辑"——点开"编辑图表上显示的文字"这个
+        # popover（跟单选/多选题图表复用的同一个组件），改左边这个标签，验证表格
+        # 表头和落库的覆盖记录都跟着变，不影响真正引用的是哪份文档。
+        legend_left_label = cross_doc_result["left_label"]
+        legend_edit_key = f"label_override_crosstab_block_2_{legend_left_label}"
+        # block2 目前渲染顺序是"图例编辑 popover → 表格/图表 → 插入图片 popover"，
+        # 图例编辑是第一个 popover 触发按钮。
         block2.get_by_test_id("stPopover").get_by_role("button").first.click()
+        page.locator(f".{css_key(legend_edit_key)} input").fill("__TEST__自定义图例")
+        page.locator(f".{css_key(legend_edit_key)} input").press("Enter")
+        page.wait_for_timeout(500)
+        page.keyboard.press("Escape")
+        # 表格表头（<th>）和图表图例（SVG <text>）都应该跟着变——两处都要匹配到，
+        # 不能只改了一处。
+        expect(block2.get_by_text("__TEST__自定义图例")).to_have_count(2)
+
+        block2.get_by_test_id("stPopover").get_by_role("button").last.click()
         page.locator('[class*="st-key-img_upload_crosstab_block_2_"] input[type="file"]').set_input_files(root / "evidence.png")
         wait_saved(lambda x: bool(x.get("images", {}).get("crosstab_block_2")))
         page.keyboard.press("Escape")
+        # 真机验证过好几次的同一类坑：关掉 popover 本身会触发一次异步 rerun，紧接着
+        # 点"保存"容易落在还没跑完的这次 rerun 中间，按钮点了但没生效。等这次 rerun
+        # 稳定下来再点。
+        page.wait_for_timeout(800)
         click_key("manual_save_button")
+        page.wait_for_timeout(1500)
+        # 真实反馈的严重 bug（这里真机复现出来的，不是脚本本身的问题）：手动保存对
+        # "已经从历史记录打开过的文档"必现报错"set_test_method() got multiple values
+        # for argument 'project_id'"——根源在 engine/persistence.py，已经在那边修好，
+        # 这个断言就是确认这条路径真的走通，不再退化成"点了保存、页面上却弹出保存
+        # 失败提示"。
+        assert "已手动保存" in page.content(), "\"保存\"按钮点击没有生效——页面上没有出现保存成功的提示"
         page.reload()
         # 新 session 从项目列表重新打开，证明结果不是靠旧页面内存存活。
         open_document()
@@ -191,6 +230,12 @@ def run_browser(root, url):
         restored = extras()
         assert [b["result"] for b in restored["crosstab_blocks"]] == [b["result"] for b in saved["crosstab_blocks"]]
         assert restored["images"]["crosstab_block_2"]
+        # 图例文字覆盖也要跟着手动保存持久化下来，不是只在这次浏览器 session 里
+        # 生效——重新打开这份文档，表格表头应该还是编辑过的文字。
+        assert restored["label_overrides"]["crosstab_block_2"][legend_left_label] == "__TEST__自定义图例"
+        # 重新打开后，表格表头和图表图例（图表是直接用落库的 chart_config 重新渲染，
+        # 不用重新生成）都应该已经是编辑过的文字，不需要再手动点一次生成。
+        expect(page.get_by_text("__TEST__自定义图例")).to_have_count(2)
         expect(page.locator(f".{css_key(left_group_key)}_name_0").locator("input")).to_have_value("自定义 A")
         click_key("xtb_1_delete_block")
         expect(page.locator(".st-key-crosstab_block_1")).to_have_count(0)

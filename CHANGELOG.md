@@ -7,6 +7,49 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-23 — v1.3.0
+
+- **跨问卷对比：标题写清楚题干、颜色改用标准调色板、图例可编辑** /
+  **Cross-survey comparison: titles now include the real question text, colors
+  switched to the standard palette, and legends are now editable.**
+  - 真实反馈三点：① 标题只有题号（如"Q24"），看不出对比的是哪道题；② 图表两个
+    系列的颜色差异太小，用的不是报告里其它图表统一的调色板；③ 图例文字（默认是
+    文档标题/文件名）需要能改。
+    Reported: (1) titles only showed question numbers like "Q24", giving no clue
+    what was being compared; (2) the two series' colors were too close together and
+    didn't match the palette used everywhere else in the report; (3) the legend
+    text (document titles by default) needed to be editable.
+  - 标题现在带完整题干原文；分组对比图表默认颜色换成跟其它图表统一的十色调色板
+    （之前用的是一套只有四种蓝色深浅的窄色板，从未在界面上真正验证过）；图例文字
+    复用现成的"编辑图表上显示的文字"机制，改了同时更新表格表头和图表图例，并
+    正常持久化。
+    Titles now include the full question text. Grouped comparison charts default
+    to the same ten-color palette used elsewhere (previously a narrow four-shade
+    blue-only scale that had never actually been validated on screen). Legend text
+    reuses the existing "edit chart labels" mechanism — editing it updates both the
+    table header and the chart legend, and persists correctly.
+- **紧急修复：手动保存对"已经打开过的历史文档"必现报错** / **Critical fix: manual
+  save crashed every time for a previously-opened document.**
+  - 真机验证这次改动时意外发现（不是这次改动引入的，是已经存在的 bug）：点
+    "保存"报错"set_test_method() got multiple values for argument 'project_id'"。
+    根源是读取测试方法设置的 `get_test_method()` 用 `SELECT * ... dict(row)`，
+    返回的字典里天生带着 `project_id` 这一列；再拿这份字典去调用保存函数时，
+    跟已经单独传的 `project_id` 参数撞上，直接抛异常——对任何"先从项目工作区
+    打开一份历史分析、再点保存"的操作都会必现。
+    Discovered incidentally while real-browser-verifying this update (a
+    pre-existing bug, not introduced by it): clicking "Save" failed with
+    `set_test_method() got multiple values for argument 'project_id'`.
+    `get_test_method()` reads the row via `SELECT * ... dict(row)`, so the
+    returned dict already contains a `project_id` key; passing that dict on to the
+    save function collided with the `project_id` already passed separately —
+    reproducible every time for any document opened from the project workspace
+    and then saved.
+  - 已在 `engine/persistence.py` 修复并补充回归测试，用真实调用链路（`get_test_method`
+    的实际返回值，不是手写的干净字典）复现过。
+    Fixed in `engine/persistence.py` with a regression test that reproduces the
+    real call path (using `get_test_method`'s actual return value, not a
+    hand-written clean dict).
+
 ## 2026-09-23 — v1.2.2
 
 - **修复：同一道多选题在问卷里循环问了好几遍时，第 2/3 轮会被误判成独立单选题**
