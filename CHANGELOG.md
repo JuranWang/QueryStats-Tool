@@ -7,6 +7,31 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-24 — v1.4.1
+
+- **修复：推理模型（如 MiniMax-M2）的 AI 功能必现解析失败** / **Fixed: AI features
+  always failed to parse output from reasoning models (e.g. MiniMax-M2).**
+  - 真实反馈：换用 MiniMax 之后 AI 功能报错，认证是通过的，但解析响应失败。
+    查证发现 MiniMax-M2 这类"推理模型"会先输出一段 `<think>...</think>` 思维链，
+    这段文字经常会提到"要输出的 JSON 是 `{...}`"这种话——原来"找第一个 `{` 到
+    最后一个 `}`"的朴素解析算法会把思维链里提到的花括号也框进去，切出来的是一段
+    混杂大量说明文字的非法 JSON，直接解析失败。
+    Reported: after switching to MiniMax, AI features errored out — authentication
+    succeeded but response parsing failed. Investigation found MiniMax-M2 (a
+    "reasoning" model) emits a `<think>...</think>` chain-of-thought block before
+    its real answer, and that block often mentions things like "the JSON to output
+    is `{...}`" — the old naive "first `{` to last `}`" parser would grab braces
+    mentioned inside the reasoning text too, producing an illegal JSON blob mixed
+    with prose, which failed to parse.
+  - 修复：解析前先把整段 `<think>...</think>` 去掉再做花括号匹配，普通模型的
+    输出里本来就没有这个标签，去掉一个不存在的东西是无操作，不影响任何现有行为。
+    真机验证：用真实 API 调用捕获到的原始响应文本作为回归测试，端到端重新跑通过。
+    Fixed: strip any `<think>...</think>` block before brace-matching. Regular
+    models never emit this tag, so removing something that isn't there is a no-op
+    and doesn't change existing behavior. Verified live: added a regression test
+    using the exact raw response text captured from a real API call, and re-ran
+    the end-to-end call successfully after the fix.
+
 ## 2026-09-24 — v1.4.0
 
 - **新增 Qwen 百炼 Coding Plan 套餐支持** / **Added support for Qwen's Bailian
