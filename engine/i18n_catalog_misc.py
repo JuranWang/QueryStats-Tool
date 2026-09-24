@@ -113,6 +113,10 @@ EN_MISC: dict[str, str] = {
     '选用了「自定义 API」但没有填模型名：请在设置里填写': 'Custom API selected without a model name. Enter it in settings.',
     'Qwen（通义千问，大陆账号，直连 DashScope）': 'Qwen (mainland China account, direct DashScope)',
     'Qwen（通义千问，国际/新加坡账号，DashScope International）': 'Qwen (international/Singapore account, DashScope International)',
+    'Qwen（通义千问，百炼 Coding Plan 套餐，大陆，key 形如 sk-sp-xxx）': 'Qwen (Bailian Coding Plan, mainland China, key looks like sk-sp-xxx)',
+    'Qwen（通义千问，百炼 Coding Plan 套餐，国际，key 形如 sk-sp-xxx）': 'Qwen (Bailian Coding Plan, international, key looks like sk-sp-xxx)',
+    'Qwen(Coding Plan)': 'Qwen (Coding Plan)',
+    'Qwen(Coding Plan国际)': 'Qwen (Coding Plan Intl)',
     'OpenRouter（聚合网关，模型名要带厂商前缀，比如 qwen/qwen-turbo）': 'OpenRouter (gateway; use a provider prefix, e.g. qwen/qwen-turbo)',
     'MiniMax（国际/全球账号）': 'MiniMax (international/global account)',
     'MiniMax（国际/全球账号，api.minimax.io）': 'MiniMax (international/global account, api.minimax.io)',
@@ -154,6 +158,14 @@ EN_MISC: dict[str, str] = {
     'Qwen Long —— ¥0.5/¥2，超长文本/长上下文任务专用': 'Qwen Long — ¥0.5/¥2; for long documents and long-context tasks',
     'Qwen MT Turbo —— 专用翻译模型，比通用聊天模型翻译更准（翻译场景推荐）': 'Qwen MT Turbo — Dedicated translation model; more accurate than general chat models (recommended for translation)',
     'Qwen3.7-Plus —— 新一代 Plus，质量比 qwen-plus 更高': 'Qwen3.7-Plus — New-generation Plus; higher quality than qwen-plus',
+    'Qwen3.7-Plus —— 官方推荐档位之一，支持图片理解': 'Qwen3.7-Plus — One of the officially recommended tiers; supports image understanding',
+    'Qwen3.6-Plus —— 官方推荐档位之一，支持图片理解': 'Qwen3.6-Plus — One of the officially recommended tiers; supports image understanding',
+    'Qwen3-Max（2026-01-23 版本）': 'Qwen3-Max (2026-01-23 build)',
+    'Qwen3-Coder-Plus —— 代码场景': 'Qwen3-Coder-Plus — coding tasks',
+    'Qwen3-Coder-Next —— 代码场景': 'Qwen3-Coder-Next — coding tasks',
+    'Kimi K2.5 —— 官方推荐档位之一，支持图片理解': 'Kimi K2.5 — One of the officially recommended tiers; supports image understanding',
+    'GLM-5 —— 官方推荐档位之一': 'GLM-5 — One of the officially recommended tiers',
+    'MiniMax-M2.5 —— 官方推荐档位之一': 'MiniMax-M2.5 — One of the officially recommended tiers',
     'Qwen3-Max —— 上一代旗舰': 'Qwen3-Max — Previous-generation flagship',
     'Qwen3.8-Max —— 当前旗舰': 'Qwen3.8-Max — Current flagship',
     'MiniMax-M2 —— 性价比最高（推荐）': 'MiniMax-M2 — Best value (recommended)',
@@ -187,6 +199,10 @@ NOT_TRANSLATED_MISC: set[str] = {
     '手动新建',  # 筛选数据值，显示处翻译
     'Qwen（通义千问，大陆账号，直连 DashScope）',  # 模块级常量/数据值，显示处翻译
     'Qwen（通义千问，国际/新加坡账号，DashScope International）',  # 模块级常量/数据值，显示处翻译
+    'Qwen（通义千问，百炼 Coding Plan 套餐，大陆，key 形如 sk-sp-xxx）',  # 模块级常量/数据值，显示处翻译
+    'Qwen（通义千问，百炼 Coding Plan 套餐，国际，key 形如 sk-sp-xxx）',  # 模块级常量/数据值，显示处翻译
+    'Qwen(Coding Plan)',  # 模块级常量/数据值，显示处翻译
+    'Qwen(Coding Plan国际)',  # 模块级常量/数据值，显示处翻译
     'OpenRouter（聚合网关，模型名要带厂商前缀，比如 qwen/qwen-turbo）',  # 模块级常量/数据值，显示处翻译
     'MiniMax（国际/全球账号）',  # 模块级常量/数据值，显示处翻译
     'MiniMax（国际/全球账号，api.minimax.io）',  # 模块级常量/数据值，显示处翻译
@@ -223,6 +239,14 @@ NOT_TRANSLATED_MISC: set[str] = {
     'Qwen Long —— 超长文本/长上下文任务专用',  # 模块级常量/数据值，显示处翻译
     'Qwen MT Turbo —— 专用翻译模型，比通用聊天模型翻译更准（翻译场景推荐）',  # 模块级常量/数据值，显示处翻译
     'Qwen3.7-Plus —— 新一代 Plus，质量比 qwen-plus 更高',  # 模块级常量/数据值，显示处翻译
+    'Qwen3.7-Plus —— 官方推荐档位之一，支持图片理解',  # 模块级常量/数据值，显示处翻译
+    'Qwen3.6-Plus —— 官方推荐档位之一，支持图片理解',  # 模块级常量/数据值，显示处翻译
+    'Qwen3-Max（2026-01-23 版本）',  # 模块级常量/数据值，显示处翻译
+    'Qwen3-Coder-Plus —— 代码场景',  # 模块级常量/数据值，显示处翻译
+    'Qwen3-Coder-Next —— 代码场景',  # 模块级常量/数据值，显示处翻译
+    'Kimi K2.5 —— 官方推荐档位之一，支持图片理解',  # 模块级常量/数据值，显示处翻译
+    'GLM-5 —— 官方推荐档位之一',  # 模块级常量/数据值，显示处翻译
+    'MiniMax-M2.5 —— 官方推荐档位之一',  # 模块级常量/数据值，显示处翻译
     'Qwen3-Max —— 上一代旗舰',  # 模块级常量/数据值，显示处翻译
     'Qwen3.8-Max —— 当前旗舰',  # 模块级常量/数据值，显示处翻译
     'DeepSeek V4.1 Flash —— $0.15／$0.60，便宜好用',  # 模块级常量/数据值，显示处翻译

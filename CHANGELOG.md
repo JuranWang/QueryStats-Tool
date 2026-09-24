@@ -7,6 +7,31 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-24 — v1.4.0
+
+- **新增 Qwen 百炼 Coding Plan 套餐支持** / **Added support for Qwen's Bailian
+  "Coding Plan" subscription tier.**
+  - 真实反馈：内部团队共享的 Qwen key 配上之后，同事那边点 AI 功能报错
+    `401 Incorrect API key provided`。查证发现这个 key 是阿里云百炼的
+    "Coding Plan"套餐（key 格式 `sk-sp-xxx`），跟普通按量付费的 Qwen key
+    是完全隔离的第三套计费/接入体系（各自独立的 base_url、模型名），混用
+    官方文档明确写了会 401/403——之前"qwen"这个供应商配的是按量付费专用的
+    域名，根本不认这种 key。
+    Reported: after configuring the team's shared Qwen key, AI features failed
+    with `401 Incorrect API key provided`. Investigation found the key belongs to
+    Alibaba Bailian's "Coding Plan" subscription (`sk-sp-xxx` format) — a third
+    billing/access tier, fully isolated from regular pay-as-you-go Qwen keys, with
+    its own dedicated base URL and model names. Alibaba's own docs state mixing
+    them causes exactly this 401/403. The existing "qwen" provider only pointed at
+    the pay-as-you-go domain, which rejects this key type outright.
+  - 新增两个独立的供应商选项（大陆/国际各一个），配上各自专属的 base_url 和
+    Coding Plan 专用的版本化模型名（如 `qwen3.7-plus`，不是 `qwen-plus`）。
+    内部团队版的共享 key 已经切换到正确的供应商配置。
+    Added two new provider options (mainland and international), each pointing at
+    its dedicated base URL with Coding Plan's own versioned model names (e.g.
+    `qwen3.7-plus`, not `qwen-plus`). The internal team build's shared key has been
+    switched to the correct provider configuration.
+
 ## 2026-09-24 — v1.3.1
 
 - **紧急修复：全新 clone 下来第一次跑必现崩溃** / **Critical fix: every fresh clone

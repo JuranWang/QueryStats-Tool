@@ -135,6 +135,38 @@ def test_get_provider_constructs_minimax_as_openai_compatible(tmp_path, monkeypa
     conn.close()
 
 
+def test_qwen_coding_plan_uses_its_own_dedicated_base_url(tmp_path, monkeypatch):
+    """真实反馈复现的 bug：内部团队共享的 Qwen key 是"Coding Plan"套餐（sk-sp-xxx），
+    配到普通按量付费的 qwen 供应商（dashscope.aliyuncs.com/compatible-mode/v1）上
+    直接 401 Incorrect API key provided——阿里云官方文档确认 Coding Plan 必须配
+    它自己专属的域名（coding.dashscope.aliyuncs.com/v1），两者不能混用。"""
+
+    conn = db.init_db(str(tmp_path / "survey.sqlite"))
+    db.set_setting(conn, "llm_provider", "qwen_coding_plan")
+    monkeypatch.setenv("DASHSCOPE_CODING_PLAN_API_KEY", "sk-sp-fake-coding-plan-key")
+
+    provider = get_provider(conn)
+
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider._client.base_url == "https://coding.dashscope.aliyuncs.com/v1/"
+    # Coding Plan 有自己独立的一套版本化模型名，不是 qwen-plus/qwen-flash 这些
+    # 按量付费的通用名字，默认模型也要跟着换，不能沿用普通 qwen 的默认值。
+    assert provider.model == "qwen3.7-plus"
+    conn.close()
+
+
+def test_qwen_coding_plan_intl_uses_its_own_dedicated_base_url(tmp_path, monkeypatch):
+    conn = db.init_db(str(tmp_path / "survey.sqlite"))
+    db.set_setting(conn, "llm_provider", "qwen_coding_plan_intl")
+    monkeypatch.setenv("DASHSCOPE_CODING_PLAN_INTL_API_KEY", "sk-sp-fake-coding-plan-key")
+
+    provider = get_provider(conn)
+
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider._client.base_url == "https://coding-intl.dashscope.aliyuncs.com/v1/"
+    conn.close()
+
+
 def test_get_provider_custom_reads_base_url_from_settings(tmp_path, monkeypatch):
     # "自定义 API"——同事各自用的供应商不在预置列表里，填 base_url + api key + 模型名
     # 就该能用，不需要改代码。

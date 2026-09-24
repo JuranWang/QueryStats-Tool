@@ -65,9 +65,12 @@ Open the home page → **API / Model settings**, pick a provider, choose a model
 dropdown (or "Custom…" to type any model name), paste your API key, and save.
 
 Supported: Anthropic (Claude), OpenAI, DeepSeek, Kimi (Moonshot), Qwen (Alibaba DashScope —
-separate entries for **mainland-China** and **international/Singapore** accounts, since keys
-are not interchangeable), Grok (xAI), OpenRouter (one key, most vendors' models), MiniMax, and
-**Custom API** — any OpenAI-compatible endpoint: enter its base URL, model name and key.
+separate entries for **mainland-China** and **international/Singapore** pay-as-you-go accounts,
+plus two more for the **Bailian "Coding Plan" subscription** tier specifically — its keys look
+like `sk-sp-xxx` and are a third, fully isolated billing/endpoint system that cannot be mixed
+with the regular pay-as-you-go keys/domains above, since keys are not interchangeable), Grok
+(xAI), OpenRouter (one key, most vendors' models), MiniMax, and **Custom API** — any
+OpenAI-compatible endpoint: enter its base URL, model name and key.
 
 Instead of the UI you can use environment variables (the UI value wins if both are set):
 
@@ -79,6 +82,8 @@ Instead of the UI you can use environment variables (the UI value wins if both a
 | Kimi | `MOONSHOT_API_KEY` |
 | Qwen (mainland) | `DASHSCOPE_API_KEY` |
 | Qwen (international) | `DASHSCOPE_INTL_API_KEY` |
+| Qwen (Bailian Coding Plan, mainland, key looks like `sk-sp-xxx`) | `DASHSCOPE_CODING_PLAN_API_KEY` |
+| Qwen (Bailian Coding Plan, international) | `DASHSCOPE_CODING_PLAN_INTL_API_KEY` |
 | Grok | `XAI_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
 | MiniMax (international) | `MINIMAX_API_KEY` |

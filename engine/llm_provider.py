@@ -161,6 +161,20 @@ PROVIDER_REGISTRY: dict[str, type] = {
     "qwen_intl": _openai_compatible_factory(
         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     ),
+    # 真实反馈复现的坑：内部团队共享的 Qwen key 用的是"Coding Plan"这个套餐
+    # （key 格式是 sk-sp-xxx，不是普通按量付费的 sk-xxx），配到上面 "qwen"（按量
+    # 付费专用的域名）上会直接 401 "Incorrect API key provided"，报错看着完全
+    # 不像是"套餐类型配错了"（跟 qwen/qwen_intl 域名配错的报错長得几乎一样）。
+    # 阿里云官方文档明确说明：Token Plan、Coding Plan、按量付费三种 key/域名互相
+    # 隔离，必须配对使用，配错了要么 401/403，要么走成按量付费扣款——这是第三种
+    # 需要单独区分的 Qwen 接入方式，不是 qwen/qwen_intl 那两种按量付费域名的
+    # 简单变体。
+    "qwen_coding_plan": _openai_compatible_factory(
+        "https://coding.dashscope.aliyuncs.com/v1"
+    ),
+    "qwen_coding_plan_intl": _openai_compatible_factory(
+        "https://coding-intl.dashscope.aliyuncs.com/v1"
+    ),
     "grok": _openai_compatible_factory("https://api.x.ai/v1"),
     # OpenRouter：一个 key 走一个聚合网关，能选一大堆模型（包括阿里自己的 Qwen 系列）——
     # 跟直接开 DashScope 账号的价格是一样的（官方报价 2026-09 查证：qwen/qwen-turbo
@@ -200,6 +214,8 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     # 大陆和国际是两个不同控制台开出来的、互不通用的 key，各自存一份、各自读一个
     # 环境变量名，不会因为共用同一个变量名而把两边的 key 搞混。
     "qwen_intl": "DASHSCOPE_INTL_API_KEY",
+    "qwen_coding_plan": "DASHSCOPE_CODING_PLAN_API_KEY",
+    "qwen_coding_plan_intl": "DASHSCOPE_CODING_PLAN_INTL_API_KEY",
     "grok": "XAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "minimax": "MINIMAX_API_KEY",
@@ -218,6 +234,13 @@ PROVIDER_DEFAULT_MODEL: dict[str, str] = {
     "kimi": "moonshot-v1-8k",
     "qwen": "qwen-plus",
     "qwen_intl": "qwen-plus",
+    # Coding Plan 套餐用的是它自己独立的一套版本化模型名（qwen3.7-plus 这种），不是
+    # 按量付费的 qwen-plus/qwen-flash 这些通用名字——查证阿里云官方 Coding Plan 文档
+    # 2026-09：官方推荐档位之一，支持图片理解。用错普通按量付费的模型名会在修好
+    # base_url/key 之后接着报"模型不存在"，是另一个需要单独确认的坑，不是同一个
+    # 问题的自然延伸。
+    "qwen_coding_plan": "qwen3.7-plus",
+    "qwen_coding_plan_intl": "qwen3.7-plus",
     "grok": "grok-4",
     # OpenRouter 上模型名要带厂商前缀；qwen-turbo 官方已经标注"不再更新，建议迁移到
     # qwen-flash"，换成 qwen3.8-flash（当前最便宜的档位，见 PROVIDER_MODEL_PRESETS）。
@@ -278,6 +301,24 @@ PROVIDER_MODEL_PRESETS["qwen_intl"] = [
     ("qwen3-max", "Qwen3-Max —— 上一代旗舰"),
     ("qwen3.8-max", "Qwen3.8-Max —— 当前旗舰"),
 ]
+# Coding Plan 是完全独立的一套模型目录（版本化命名，比如 qwen3.7-plus），不是
+# qwen/qwen_intl 那套按量付费的通用模型名——查证阿里云官方 Coding Plan 文档
+# 2026-09：这份是官方列出的当前可用模型，没有价格信息（订阅制套餐，不是这次
+# 逐个查证过的按 token 计价），国际版是同一套模型目录、只是走国际域名。
+_QWEN_CODING_PLAN_PRESETS = [
+    ("qwen3.7-plus", "Qwen3.7-Plus —— 官方推荐档位之一，支持图片理解"),
+    ("qwen3.6-plus", "Qwen3.6-Plus —— 官方推荐档位之一，支持图片理解"),
+    ("qwen3.5-plus", "Qwen3.5-Plus"),
+    ("qwen3-max-2026-01-23", "Qwen3-Max（2026-01-23 版本）"),
+    ("qwen3-coder-plus", "Qwen3-Coder-Plus —— 代码场景"),
+    ("qwen3-coder-next", "Qwen3-Coder-Next —— 代码场景"),
+    ("kimi-k2.5", "Kimi K2.5 —— 官方推荐档位之一，支持图片理解"),
+    ("glm-5", "GLM-5 —— 官方推荐档位之一"),
+    ("glm-4.7", "GLM-4.7"),
+    ("MiniMax-M2.5", "MiniMax-M2.5 —— 官方推荐档位之一"),
+]
+PROVIDER_MODEL_PRESETS["qwen_coding_plan"] = _QWEN_CODING_PLAN_PRESETS
+PROVIDER_MODEL_PRESETS["qwen_coding_plan_intl"] = _QWEN_CODING_PLAN_PRESETS
 # 大陆版是同一套型号目录，只是走 api.minimaxi.com 这个不同的域名（见上面
 # PROVIDER_REGISTRY 里 "minimax_cn" 那条的注释）——型号名本身跟国际版完全一样。
 PROVIDER_MODEL_PRESETS["minimax_cn"] = PROVIDER_MODEL_PRESETS["minimax"]

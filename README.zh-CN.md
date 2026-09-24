@@ -62,7 +62,9 @@ README 和报错信息帮你排查——这类环境问题（Python 版本不对
 
 打开首页(`http://localhost:8501`) → "API / 模型设置"，选供应商、填 API key，保存后
 立刻生效。支持的供应商：Anthropic (Claude)、OpenAI、DeepSeek、Kimi (Moonshot)、
-Qwen (DashScope，大陆账号/国际账号是两个选项，key 不通用)、Grok (xAI)、OpenRouter（一个 key
+Qwen (DashScope 按量付费，大陆账号/国际账号是两个选项，key 不通用；另外还有两个专门给
+百炼"Coding Plan"套餐用的选项——这个套餐的 key 长得像 `sk-sp-xxx`，是完全独立于上面
+按量付费的第三套计费/域名体系，不能混用)、Grok (xAI)、OpenRouter（一个 key
 能调用其它厂商大部分模型）、MiniMax，以及"自定义 API"——任何 OpenAI 兼容接口，自己填 base_url + 模型名 + key。
 模型名可以从下拉框选，也可以选"自定义…"手打。
 
@@ -76,6 +78,8 @@ Qwen (DashScope，大陆账号/国际账号是两个选项，key 不通用)、Gr
 | Kimi | `MOONSHOT_API_KEY` |
 | Qwen（大陆） | `DASHSCOPE_API_KEY` |
 | Qwen（国际） | `DASHSCOPE_INTL_API_KEY` |
+| Qwen（百炼 Coding Plan 套餐，大陆，key 形如 `sk-sp-xxx`） | `DASHSCOPE_CODING_PLAN_API_KEY` |
+| Qwen（百炼 Coding Plan 套餐，国际） | `DASHSCOPE_CODING_PLAN_INTL_API_KEY` |
 | Grok | `XAI_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
 | MiniMax（国际/全球账号） | `MINIMAX_API_KEY` |
