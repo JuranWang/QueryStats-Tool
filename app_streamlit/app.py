@@ -2269,6 +2269,29 @@ with st.expander(t("原始数据"), expanded=not st.session_state.get("generated
         id_col = "（不去重）"  # 历史记录里的数据已经是去重后的最终结果，不用再选一次
         st.info(t("已从历史记录加载：{title}（{total} 人）", title=st.session_state.get('document_title', ''), total=len(df_all)))
     else:
+        # 真实反馈的严重 bug："新建问卷分析"默认填的标题是上一份问卷的标题，点保存
+        # 直接把上一份问卷覆盖掉了。根源和"load_existing"分支上面注释里说的是同一类
+        # 问题：project_view.py 点"+ 新建问卷分析"时原来只手动清了 mapping/generated/
+        # conclusions/test_method 这几个"记得住"的 key，document_title/saved_document_id
+        # 不在这份清单里，上一份分析残留的这两个值会原样带进这次"新建"——下面第 2820/2838
+        # 行两处判断都是"session_state 里已经有这个 key 就不当新的处理"，一旦
+        # document_title/saved_document_id 是上一份的残留值，标题输入框显示的就是
+        # 上一份的标题，保存逻辑也会误判成"这份文档已经存过一次了"走 update_analysis
+        # 覆盖更新，而不是 save_analysis 新建一条。
+        #
+        # 用 st.session_state.pop("analysis_mode", None) 判断是不是"新建"这个一次性
+        # 开关——第一次从项目工作区点"+新建问卷分析"跳转过来时它是 "new"，pop 出来
+        # 是 "new" 就顺手把这个 key 也删掉，同一次"新建分析"过程中用户上传文件/填
+        # 映射表触发的后续 rerun，这个 key 已经不在了，不会重复触发下面的清空（不然
+        # 每次 rerun 都会把用户刚填的映射表/标题清空，没法正常操作）。清空策略跟
+        # load_existing 分支一样，用白名单而不是列举"要清哪些"——不然又会重演这次
+        # 同样的漏列问题。
+        if st.session_state.pop("analysis_mode", None) == "new":
+            keep_keys = {"db_conn", "lang", "current_document_id", "current_project_id"}
+            for key in list(st.session_state.keys()):
+                if key not in keep_keys:
+                    del st.session_state[key]
+
         uploaded = st.file_uploader(t("上传问卷原始数据（CSV / xlsx）"), type=["csv", "xlsx"])
 
         if uploaded is None:

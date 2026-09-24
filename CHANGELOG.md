@@ -7,6 +7,30 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-23 — v1.2.1
+
+- **紧急修复：新建问卷分析会覆盖上一份问卷** / **Critical fix: creating a new survey analysis could overwrite the previous one.**
+  - 真实反馈：点"+ 新建问卷分析"，标题输入框默认显示的是上一份问卷的标题，点
+    "保存"会把上一份问卷直接覆盖掉，不是新建一条记录。
+    Reported bug: clicking "+ New survey analysis" showed the *previous* document's
+    title by default, and saving overwrote that previous document instead of creating
+    a new one.
+  - 根源：`session_state` 里 `document_title`/`saved_document_id` 这些上一份分析
+    残留的值，"新建"这个动作原来只清了 `mapping`/`generated`/`conclusions`/
+    `test_method` 几个"记得住"的 key，这两个不在清单里，跟着带进了下一次"新建"。
+    Root cause: `document_title`/`saved_document_id` from the previous analysis
+    lingered in `session_state` — the "new analysis" action only cleared a
+    hand-maintained list of keys (`mapping`/`generated`/`conclusions`/`test_method`)
+    that didn't include these two.
+  - 修复：改成跟"打开历史分析"共用同一套"白名单保留、其余全部清空"策略，不再
+    靠手动列举要清哪些 key（这类清单以后加新功能大概率会再漏）。已用真实浏览器
+    复现过修复前后的行为差异，并新增自动化回归测试。
+    Fixed by reusing the same "keep an allowlist, clear everything else" strategy
+    already used when reopening a saved analysis, instead of a hand-maintained list
+    of keys to clear (which is exactly the kind of list that tends to miss new keys
+    as features are added). Verified the before/after behavior difference in a real
+    browser and added an automated regression test.
+
 ## 2026-09-22 — v1.2.0
 
 - **新增 MiniMax 大陆账号支持** / **Added MiniMax mainland-China account support.**

@@ -99,9 +99,13 @@ with tab_quant:
     if st.button(t('+ 新建问卷分析'), type="primary"):
         st.session_state["current_document_id"] = None
         st.session_state["analysis_mode"] = "new"
-        # 切页面前把跟"上一次分析"相关的 session_state 清掉，避免带着旧数据进新分析。
-        for key in ("mapping", "generated", "conclusions", "test_method"):
-            st.session_state.pop(key, None)
+        # 真实反馈的严重 bug：这里原来手动列了 mapping/generated/conclusions/
+        # test_method 几个"记得住"的 key 去清，document_title/saved_document_id
+        # 不在这份清单里——新建分析会显示上一份问卷的标题，点保存直接覆盖掉上一份
+        # 问卷。跟"打开历史分析"那边同一个教训：不要列举"要清哪些"，这份清单以后
+        # 加新功能大概率会再漏。真正的清空逻辑挪到 app.py 里跟"打开历史分析"共用
+        # 同一套"白名单保留、其余全清空"策略（搜 `analysis_mode`、`pop("analysis_mode"`），
+        # 这里只需要负责设好这两个标记再跳转页面。
         st.switch_page("app.py")
 
 with tab_qual:
