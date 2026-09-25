@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -401,6 +402,80 @@ def list_documents(
         params.append(research_type)
     sql += " ORDER BY updated_at DESC, id DESC"
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+
+# 真实反馈"这里需要显示问卷的发布时间，并且默认按照时间排序，获取时间很简单，问卷
+# 收录的回复中都有答题者的回复时间，按照最晚填问卷的时间记录"——上传时列名命中
+# 这批关键词的列会被 app.py 的 `guess_is_platform_column()` 自动归类成"平台信息"
+# （section='platform_auto'）落库，这里从这些已经存好的列里找出"作答提交/结束时间"
+# 那一列，不是"开始时间"（同一份问卷常常两列都有，含义不一样，不能选错）。
+_RESPONSE_TIME_STRONG_KEYWORDS = (
+    "结束时间", "提交时间", "完成时间", "作答结束",
+    "end date", "end time", "submitted", "submission", "completion time", "finished",
+)
+_RESPONSE_TIME_EXCLUDE_KEYWORDS = ("开始时间", "start date", "start time")
+
+
+def get_document_response_time(conn: sqlite3.Connection, document_id: int) -> str | None:
+    """这份问卷"发布时间"的推算值：受访者里最晚一次提交问卷的时间。
+
+    上传时列名命中"结束/提交/完成时间"这批关键词的列会被自动归到"平台信息"
+    （section='platform_auto'）落库，这里从这些列里挑出最像"提交/结束时间"的
+    一列（排除"开始时间"，两者常常同时存在、含义完全不同），把这一列所有受访者
+    的值解析成时间，取最大值——即"最晚填问卷的那个人的时间"，就是这份问卷该显示
+    的发布时间。找不到任何能解析成时间的平台信息列（比如很老的历史数据、或者
+    这份问卷的导出压根没带这类字段）就返回 None，调用方应该退回显示"更新于"这个
+    数据库时间戳，不能假装有一个发布时间。
+    """
+
+    candidates = conn.execute(
+        """
+        SELECT id, source_text_en FROM questions
+        WHERE document_id = ? AND section = 'platform_auto'
+        ORDER BY order_index
+        """,
+        (document_id,),
+    ).fetchall()
+    if not candidates:
+        return None
+
+    def _score(name: str | None) -> int:
+        name = name or ""
+        lowered = name.lower()
+        if any(kw in name or kw in lowered for kw in _RESPONSE_TIME_EXCLUDE_KEYWORDS):
+            return -1
+        if any(kw in name or kw in lowered for kw in _RESPONSE_TIME_STRONG_KEYWORDS):
+            return 2
+        return 0
+
+    ordered = sorted(candidates, key=lambda row: -_score(row["source_text_en"]))
+
+    for row in ordered:
+        if _score(row["source_text_en"]) < 0:
+            continue
+        raw_values = [
+            r[0] for r in conn.execute(
+                "SELECT raw_value FROM responses WHERE question_id = ?", (row["id"],)
+            ).fetchall()
+        ]
+        if not raw_values:
+            continue
+        # 这里经常会真的拿一批根本不是日期的值来试解析（IP、设备型号……都会走到
+        # 这条兜底路径），pandas 对"整列格式不统一/推断不出来"这种情况会主动打一条
+        # UserWarning——这是预期之内、已经用下面的"至少一半解析成功"兜底处理掉的
+        # 正常情况，不是真的出了问题，压掉这条警告，不要让日志被刷屏。
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            parsed = pd.to_datetime(pd.Series(raw_values), errors="coerce")
+        parsed = parsed.dropna()
+        # 至少要有一半的值能被解析成时间，才认为这一列真的是时间列——一列大多数
+        # 值都解析失败（比如其实是 IP／设备型号这类平台信息，凑巧列名沾了个"time"
+        # 之类的词），不该被当成"发布时间"的来源。
+        if len(parsed) == 0 or len(parsed) < len(raw_values) / 2:
+            continue
+        return parsed.max().strftime("%Y-%m-%d %H:%M:%S")
+
+    return None
 
 
 def touch_project(conn: sqlite3.Connection, project_id: int) -> None:

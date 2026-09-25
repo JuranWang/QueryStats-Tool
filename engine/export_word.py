@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from engine.i18n import t
 
+import io
 import math
 import tempfile
 import textwrap
@@ -19,6 +20,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 from matplotlib.patches import Rectangle
+from PIL import Image, ImageDraw, ImageFont
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
@@ -353,6 +355,143 @@ def _render_chart_image(
 
     figure.savefig(tmp_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(figure)
+
+
+# "复制/下载"合成图（图片+图表）用的排版常数——这是导出的静态图片，不是网页上的
+# 卡片，没有真实浏览器窗口宽度可以读，用一批经验值：
+# - _SNAPSHOT_MAX_CONTENT_WIDTH_PX：多张图片排一行时的宽度上限，跟网页"排版预览"
+#   假设的卡片宽度（app.py 的 ROW_WIDTH_ASSUMPTION_PX=940）同一量级。
+# - _SNAPSHOT_ROW_HEIGHT_PX：多张图片时每行的基准高度——比网页上排版预览用的
+#   IMAGE_ROW_BASE_HEIGHT_PX（饼图高度的 2/3）更大一些，因为这是要单独发给别人的
+#   图片文件，值得比屏幕上占的一小块排版区域给更高的清晰度。
+_SNAPSHOT_MAX_CONTENT_WIDTH_PX = 1000
+_SNAPSHOT_ROW_HEIGHT_PX = 320
+_SNAPSHOT_MARGIN_PX = 32
+_SNAPSHOT_GAP_PX = 24
+_SNAPSHOT_TITLE_FONT_SIZE = 30
+
+
+def _snapshot_title_font(size: int = _SNAPSHOT_TITLE_FONT_SIZE) -> ImageFont.FreeTypeFont:
+    path = font_manager.findfont(font_manager.FontProperties(family=_chart_font_family()))
+    return ImageFont.truetype(path, size)
+
+
+def _wrap_text_to_pixel_width(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
+    """按实际像素宽度折行（不是按字符数）——合成图的标题栏宽度是算出来的（图片/
+    图表拼起来有多宽，标题栏就有多宽），只有按真实字体量出来的像素宽度折行，才能
+    保证标题不会在窄画布上被裁掉、也不会在宽画布上过早换行。逐字符累加而不是逐个
+    单词累加：中文本来就没有空格分词，这份标题常常是中英文混排的问题原文，逐字符
+    判断对两种情况都适用。
+    """
+
+    if not text:
+        return []
+    lines: list[str] = []
+    current = ""
+    for ch in text:
+        candidate = current + ch
+        if current and font.getlength(candidate) > max_width:
+            lines.append(current)
+            current = ch
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
+def compose_question_snapshot_image(
+    kind: str,
+    stats_result: list[dict],
+    title: str,
+    images: list[dict],
+    images_per_row: int = 1,
+    color_palette: list[str] | None = None,
+) -> bytes:
+    """把这道题插入的图片和图表合并成一张 PNG——真实反馈"复制/下载出来的应该是
+    我插入的图片和图表合成一张图，不能只有图表自己"。标题只画一次、横跨整张合成图
+    的顶部（图表自己不再画标题，`_render_chart_image` 这里传 `title=None`），不然
+    图表内部一个标题、合成图外面再套一个标题，两个标题对不齐、还重复。
+
+    - 只有一张图时：图片在左、图表在右，并排一行，两边统一按图表本身的高度对齐
+      （图表保持原有大小，图片按自己的长宽比缩放到跟图表一样高）——这是网页正文
+      "只有一张图时图左图表右并排"（见 app.py 的 `render_images_and_chart`）这个
+      最终排版效果的静态版本。
+    - 两张图及以上时：图片沿用"每行放几张"分成一到多行（每行内部统一缩放到同一个
+      基准高度，一行放不下时整行等比缩小，跟网页"排版预览"`_render_tiles_row`
+      同一条规则），图表整行放在图片下面、居中。
+    """
+
+    with tempfile.NamedTemporaryFile(suffix=".png") as chart_tmp:
+        _render_chart_image(kind, stats_result, chart_tmp.name, title=None, color_palette=color_palette)
+        with Image.open(chart_tmp.name) as opened:
+            chart_img = opened.convert("RGB").copy()
+
+    opened_images = []
+    for img in images:
+        with Image.open(io.BytesIO(img["bytes"])) as opened:
+            opened_images.append(opened.convert("RGB").copy())
+
+    if len(opened_images) == 1:
+        single = opened_images[0]
+        target_height = chart_img.height
+        scaled_width = max(1, round(single.width * target_height / single.height))
+        single = single.resize((scaled_width, target_height))
+        content_width = single.width + _SNAPSHOT_GAP_PX + chart_img.width
+        content_height = target_height
+        body_positions = [(single, 0, 0), (chart_img, single.width + _SNAPSHOT_GAP_PX, 0)]
+    else:
+        per_row = max(1, images_per_row)
+        rows = [opened_images[i : i + per_row] for i in range(0, len(opened_images), per_row)]
+        scaled_rows = []
+        for row in rows:
+            widths = [_SNAPSHOT_ROW_HEIGHT_PX * (img.width / img.height) for img in row]
+            total_width = sum(widths) + _SNAPSHOT_GAP_PX * (len(row) - 1)
+            scale = min(1.0, _SNAPSHOT_MAX_CONTENT_WIDTH_PX / total_width) if total_width > 0 else 1.0
+            height = max(1, round(_SNAPSHOT_ROW_HEIGHT_PX * scale))
+            scaled_rows.append(
+                [img.resize((max(1, round(img.width * height / img.height)), height)) for img in row]
+            )
+        row_widths = [
+            sum(im.width for im in row) + _SNAPSHOT_GAP_PX * (len(row) - 1) for row in scaled_rows
+        ]
+        content_width = max(row_widths + [chart_img.width])
+
+        body_positions = []
+        y = 0
+        for row, row_width in zip(scaled_rows, row_widths):
+            x = (content_width - row_width) // 2
+            row_height = max(im.height for im in row)
+            for im in row:
+                body_positions.append((im, x, y + (row_height - im.height) // 2))
+                x += im.width + _SNAPSHOT_GAP_PX
+            y += row_height + _SNAPSHOT_GAP_PX
+        chart_x = (content_width - chart_img.width) // 2
+        body_positions.append((chart_img, chart_x, y))
+        content_height = y + chart_img.height
+
+    font = _snapshot_title_font()
+    title_lines = _wrap_text_to_pixel_width(title, font, content_width) if title else []
+    line_height = round(_SNAPSHOT_TITLE_FONT_SIZE * 1.4)
+    title_block_height = len(title_lines) * line_height + (_SNAPSHOT_GAP_PX if title_lines else 0)
+
+    canvas_width = content_width + _SNAPSHOT_MARGIN_PX * 2
+    canvas_height = _SNAPSHOT_MARGIN_PX * 2 + title_block_height + content_height
+    canvas = Image.new("RGB", (canvas_width, canvas_height), "white")
+    draw = ImageDraw.Draw(canvas)
+
+    y_text = _SNAPSHOT_MARGIN_PX
+    for line in title_lines:
+        draw.text((_SNAPSHOT_MARGIN_PX, y_text), line, font=font, fill=TITLE_COLOR)
+        y_text += line_height
+
+    body_top = _SNAPSHOT_MARGIN_PX + title_block_height
+    for element, x, y in body_positions:
+        canvas.paste(element, (_SNAPSHOT_MARGIN_PX + x, body_top + y))
+
+    buffer = io.BytesIO()
+    canvas.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def render_grouped_bar_chart_image(

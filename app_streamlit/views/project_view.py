@@ -52,9 +52,19 @@ st.caption(t('{source_lang} → {target_lang} · 建于 {created_at}', source_la
 tab_quant, tab_qual, tab_desk = st.tabs([t('定量问卷调研'), t('定性访谈'), t('案头研究')])
 
 with tab_quant:
-    st.caption(t('这个项目历史上分析过的每份问卷，按最近更新排在最前面。'))
+    st.caption(t('这个项目历史上分析过的每份问卷，按发布时间排在最前面（取受访者里最晚一次'
+        '提交问卷的时间；查不到发布时间的旧记录按最近更新排序）。'))
 
     documents = db.list_documents(conn, project_id, research_type="quant_survey")
+    # 真实反馈"这里需要显示问卷的发布时间，并且默认按照时间排序"——发布时间不是
+    # 存在 documents 表里的一个字段，是从这份问卷的原始数据里现算出来的（受访者
+    # 里最晚一次提交问卷的时间，见 db.get_document_response_time 的说明）；查不到
+    # （很老的历史数据、或者这份问卷的导出压根没带"提交/结束时间"这类字段）就退回
+    # 数据库自己的 updated_at，不能假装有一个发布时间。两种时间格式都是
+    # "YYYY-MM-DD HH:MM:SS"，可以直接按字符串比较排序，不用先转换。
+    for doc in documents:
+        doc["response_time"] = db.get_document_response_time(conn, doc["id"])
+    documents.sort(key=lambda d: d["response_time"] or d["updated_at"], reverse=True)
 
     if not documents:
         st.info(t('这个项目下还没有问卷分析。'))
@@ -62,7 +72,10 @@ with tab_quant:
         for doc in documents:
             col_title, col_meta, col_open, col_rename, col_delete = st.columns([3, 2, 1, 1, 1])
             col_title.markdown(f"**{doc['title']}**")
-            col_meta.caption(t('更新于 {updated_at}', updated_at=doc['updated_at']))
+            if doc["response_time"]:
+                col_meta.caption(t('发布于 {response_time}', response_time=doc["response_time"]))
+            else:
+                col_meta.caption(t('更新于 {updated_at}', updated_at=doc['updated_at']))
             if col_open.button(t('打开'), key=f"open_doc_{doc['id']}"):
                 st.session_state["current_document_id"] = doc["id"]
                 st.session_state["analysis_mode"] = "load_existing"

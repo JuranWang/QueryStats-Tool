@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import io
+
 import pandas as pd
 import pytest
 from docx import Document
 
 from PIL import Image
 
-from engine.export_word import _render_chart_image, export_analysis_to_docx
+from engine.export_word import _render_chart_image, compose_question_snapshot_image, export_analysis_to_docx
 
 
 DEFAULT_METHOD = {
@@ -235,3 +237,78 @@ def test_ranking_exports_question_heading_and_summary_table(tmp_path):
         [rank, *values.tolist()] for rank, values in summary.iterrows()
     ]
     assert len(document.inline_shapes) == 0
+
+
+_SNAPSHOT_STATS = [
+    {"option": "完全可以", "n": 56, "count_pct_label": "56人（56.0%）"},
+    {"option": "基本可以", "n": 27, "count_pct_label": "27人（27.0%）"},
+    {"option": "不太合适", "n": 15, "count_pct_label": "15人（15.0%）"},
+    {"option": "完全不合适", "n": 2, "count_pct_label": "2人（2.0%）"},
+]
+
+
+def _fake_png_bytes(width: int, height: int, color: str) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+class TestComposeQuestionSnapshotImage:
+    """真实反馈："复制/下载出来的应该是我插入的图片和图表合成一张图，不能只有
+    图表自己"——这几条测试锁定合成图的基本形状约束，不逐像素比对（那样测试会
+    脆得一改字体/配色就假失败），只测"结构性"的东西：合成图比单独一张图/图表
+    宽或高、图片数量变化时输出会跟着变。
+    """
+
+    def test_single_image_merges_side_by_side_and_is_wider_than_chart_alone(self, tmp_path):
+        chart_only_path = tmp_path / "chart_only.png"
+        _render_chart_image("single", _SNAPSHOT_STATS, str(chart_only_path), title=None)
+        with Image.open(chart_only_path) as chart_only:
+            chart_only_size = chart_only.size
+
+        one_image = [{"bytes": _fake_png_bytes(600, 900, "red")}]
+        merged = Image.open(io.BytesIO(
+            compose_question_snapshot_image("single", _SNAPSHOT_STATS, "Q9. 测试标题", one_image)
+        ))
+
+        # 图左图表右并排一行：合成图应该比"只有图表"明显更宽，高度大致跟图表加
+        # 标题栏差不多（不会因为图片而被拉得比图表本身还高很多）。
+        assert merged.width > chart_only_size[0]
+        assert merged.height >= chart_only_size[1]
+        assert merged.height < chart_only_size[1] * 1.5
+
+    def test_multiple_images_stack_above_chart_and_grow_taller_than_single_image_case(self, tmp_path):
+        one_image = [{"bytes": _fake_png_bytes(600, 900, "red")}]
+        three_images = [
+            {"bytes": _fake_png_bytes(800, 600, "blue")},
+            {"bytes": _fake_png_bytes(400, 600, "green")},
+            {"bytes": _fake_png_bytes(600, 400, "yellow")},
+        ]
+
+        merged_one = Image.open(io.BytesIO(
+            compose_question_snapshot_image("single", _SNAPSHOT_STATS, "同一个标题", one_image)
+        ))
+        merged_three = Image.open(io.BytesIO(
+            compose_question_snapshot_image(
+                "single", _SNAPSHOT_STATS, "同一个标题", three_images, images_per_row=2
+            )
+        ))
+
+        # 三张图（分两行：2+1）应该比一张图（并排一行）明显更高——图片改成堆在
+        # 图表上面而不是跟图表并排。
+        assert merged_three.height > merged_one.height
+
+    def test_no_images_still_produces_a_valid_chart_only_image(self, tmp_path):
+        # 调用方（app.py）正常不会在没有图片时调这个函数（会走 chart-only 的旧
+        # 路径），但这里加一条兜底测试：万一传了空列表，也不能崩，应该退化成
+        # "只有图表加标题栏"。
+        merged = Image.open(io.BytesIO(
+            compose_question_snapshot_image("single", _SNAPSHOT_STATS, "没有图片的情况", [])
+        ))
+        assert merged.width > 0 and merged.height > 0
+
+    def test_output_is_deterministic_for_the_same_inputs(self, tmp_path):
+        images = [{"bytes": _fake_png_bytes(500, 500, "purple")}]
+        first = compose_question_snapshot_image("single", _SNAPSHOT_STATS, "可重复性测试", images)
+        second = compose_question_snapshot_image("single", _SNAPSHOT_STATS, "可重复性测试", images)
+        assert first == second

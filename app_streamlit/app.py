@@ -769,15 +769,27 @@ def render_label_override_editor(q_no: str, display_result: list[dict]) -> list[
 
 
 def render_chart_save_controls(
-    download_col, copy_col, q_no: str, chart_kind: str, stats_result: list[dict], title: str, title_suffix: str = ""
+    download_col, copy_col, q_no: str, chart_kind: str, stats_result: list[dict], title: str, title_suffix: str = "",
+    images: list[dict] | None = None,
 ) -> None:
     """下载/复制这道题的图表——单独一张图，最上面带着问题原文的中文版，不用依赖
     网页上下文就能直接发给别人。中文标题优先用翻译缓存里的结果，题目本来就是中文的
     (translation_cache 查不到) 就用原文，两种情况 title_zh 都是"这道题该显示的中文"。
+
+    images：这道题插入过的图片（跟网页上排在图表旁边/上面的是同一份）——真实反馈
+    "复制/下载出来的应该是我插入的图片和图表合成一张图，不能只有图表自己"。传了
+    非空列表就走合成图那条路径（`_chart_snapshot_png_with_images_for_save`），不传
+    或传空列表就是原来的"只有图表"那条路径，行为不变。只有单选/多选题正文图表
+    (q_no 本身) 才传这个参数——排序题每个选项各有一张迷你饼图、AI 分类分布图，
+    都不是跟 q_no 的插入图片一一对应的关系，不应该被这批图片"借用"到别的图表上。
     """
 
     title_zh = st.session_state.get("translation_cache", {}).get(title, title) + title_suffix
-    png_bytes = _chart_snapshot_png_for_save(q_no, chart_kind, stats_result, title_zh)
+    images = images or []
+    if images:
+        png_bytes = _chart_snapshot_png_with_images_for_save(q_no, chart_kind, stats_result, title_zh, images)
+    else:
+        png_bytes = _chart_snapshot_png_for_save(q_no, chart_kind, stats_result, title_zh)
     with download_col:
         st.download_button(
             "",
@@ -1325,6 +1337,40 @@ def _chart_snapshot_png_for_save(q_no: str, chart_kind: str, stats_result: list[
     return png_bytes
 
 
+def _chart_snapshot_png_with_images_for_save(
+    q_no: str, chart_kind: str, stats_result: list[dict], title_zh: str, images: list[dict]
+) -> bytes:
+    """"下载/复制"这道题的图表——真实反馈"复制/下载出来的应该是我插入的图片和图表
+    合成一张图，不能只有图表自己"。合成逻辑在 `engine.export_word.compose_question_snapshot_image`
+    里（跟这道题正文用的排版规则是同一套：只有一张图时图左图表右并排，多张图时
+    图片单独排成一到多行、图表在下面）。按内容指纹缓存，避免每次 rerun 都重新拼一次
+    图片（PIL 合成比 matplotlib 画图表本身还慢一些）——指纹里除了图表内容和标题，
+    还要带上每张图片的哈希和"每行放几张"的设置，这两个当中随便一个变了，合成出来
+    的图就该跟着变，不能沿用旧缓存。
+    """
+
+    per_row = st.session_state.get(f"images_per_row_{q_no}", 1)
+    image_fingerprint = tuple(
+        img.get("bytes_hash") or hashlib.md5(img["bytes"]).hexdigest() for img in images
+    )
+    fingerprint = (
+        get_lang(), chart_kind, title_zh,
+        tuple((row["option"], row["n"]) for row in stats_result),
+        image_fingerprint, per_row,
+    )
+    cache_key = f"chart_png_with_images_cache_{q_no}"
+    cached = st.session_state.get(cache_key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+
+    png_bytes = export_word.compose_question_snapshot_image(
+        chart_kind, stats_result, title_zh, images,
+        images_per_row=per_row, color_palette=_active_chart_palette(),
+    )
+    st.session_state[cache_key] = (fingerprint, png_bytes)
+    return png_bytes
+
+
 def _grouped_bar_snapshot_png_for_save(key: str, categories: list[str], series: list[dict], title_zh: str) -> bytes:
     """按内容指纹缓存分组柱状图，避免每次 rerun 都重新画 matplotlib。"""
 
@@ -1812,6 +1858,28 @@ def render_image_attachments_grid(q_no: str) -> None:
         _render_tiles_row(tiles[row_start : row_start + per_row], single_image_align=align)
 
 
+def render_images_and_chart(q_no: str, chart_type: str, config: dict, chart_key: str) -> None:
+    """插入的图片和这道题的图表一起排版——真实反馈"只有一张图片的时候，图片和
+    图表可以放在同一行，图片在左、图表在右"。只有一张图时才用这个并排布局：两张图
+    及以上时，图片本来就已经占满一整行的排版空间（"每行放几张"+居左/居中那套设置
+    在这时候才有意义），继续用原来的做法——图片单独排成一到多行，图表在下面另起
+    一行。
+    """
+
+    images = st.session_state.get(f"images_{q_no}", [])
+    if len(images) == 1:
+        col_img, col_chart = st.columns(2, gap="medium")
+        with col_img:
+            _render_zoomable_image(images[0]["bytes"], 100)
+            if images[0].get("caption"):
+                st.caption(images[0]["caption"])
+        with col_chart:
+            render_chart(chart_type, config, key=chart_key)
+    else:
+        render_image_attachments_grid(q_no)
+        render_chart(chart_type, config, key=chart_key)
+
+
 def _render_open_answer_table(display_table: pd.DataFrame) -> None:
     """开放题的"原始数据"表格——特意不用 st.dataframe。
 
@@ -1878,20 +1946,22 @@ def render_unit(
             display_result = relabel(raw_result, label_map)
             with edit_col:
                 display_result = render_label_override_editor(q_no, display_result)
-            render_chart_save_controls(download_col, copy_col, q_no, "single", display_result, title)
+            render_chart_save_controls(
+                download_col, copy_col, q_no, "single", display_result, title,
+                images=st.session_state.get(f"images_{q_no}", []),
+            )
             with insert_col:
                 render_image_attachments_trigger(q_no)
         if header_caption:
             st.caption(header_caption)
-        # 插入的图片单独成一行，放在问题标题和下面的分析图表之间——真实反馈"插入的图片
-        # 不能和饼图/柱状图挤在同一行"，图表和图片本来就是两种不同性质的内容（图表是
-        # 算出来的分析结果，图片是用户自己找补充证据用的），混排在一起容易搞不清哪个
-        # 是哪个。图表因此也不用再在"交互图" vs "参与排版的静态截图"之间二选一了，
-        # 图表固定走交互式 ECharts 这条路，跟插入的图片互不干扰。
-        render_image_attachments_grid(q_no)
+        # 插入的图片跟下面的分析图表放在一起——只有一张图时图左图表右并排一行，两张
+        # 图及以上时图片单独成一行、图表在下面另起一行（真实反馈"插入的图片不能和
+        # 饼图/柱状图挤在同一行"，多张图时图表和图片本来就是两种不同性质的内容，
+        # 混排在一起容易搞不清哪个是哪个）。图表固定走交互式 ECharts 这条路，
+        # 跟插入的图片互不干扰，具体并排/分行的判断见 `render_images_and_chart`。
         chart_type = chart_spec.choose_chart_type("single", len(display_result))
         config = chart_spec.build_chart_config(chart_type, display_result, "", t("n = {n}", n=n_for_footer), color_palette=_active_chart_palette())
-        render_chart(chart_type, config, key=f"chart_{q_no}")
+        render_images_and_chart(q_no, chart_type, config, f"chart_{q_no}")
 
     elif kind == "numeric":
         col = cols[0]
@@ -2012,14 +2082,16 @@ def render_unit(
             display_result = relabel(raw_result, zh_map)
             with edit_col:
                 display_result = render_label_override_editor(q_no, display_result)
-            render_chart_save_controls(download_col, copy_col, q_no, "multi", display_result, title)
+            render_chart_save_controls(
+                download_col, copy_col, q_no, "multi", display_result, title,
+                images=st.session_state.get(f"images_{q_no}", []),
+            )
             with insert_col:
                 render_image_attachments_trigger(q_no)
         if header_caption:
             st.caption(header_caption)
-        render_image_attachments_grid(q_no)
         config = chart_spec.build_chart_config("bar_h", display_result, "", t("n = {n}", n=n_for_footer), color_palette=_active_chart_palette())
-        render_chart("bar_h", config, key=f"chart_multi_{q_no}")
+        render_images_and_chart(q_no, "bar_h", config, f"chart_multi_{q_no}")
 
     elif kind == "ranking":
         max_rank = len(cols)

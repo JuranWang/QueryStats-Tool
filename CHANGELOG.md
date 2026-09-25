@@ -7,6 +7,46 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-25 — v1.5.0
+
+- **问卷列表显示"发布时间"，默认按它排序** / **Survey list now shows a "published"
+  time and sorts by it.**
+  - 真实反馈：项目工作区的问卷列表只显示"更新于"（数据库落库时间），看不出这份
+    问卷实际是什么时候收上来的；应该用受访者里最晚一次提交问卷的时间。
+    Reported: the survey list only showed "updated" (the database save time), not
+    when the survey was actually fielded; it should use the latest respondent
+    submission time instead.
+  - 新增 `engine/db.py` 的 `get_document_response_time()`：从上传时自动识别出的
+    "平台信息"字段（结束/提交时间，明确排除"开始时间"，两者常同时出现、含义相反）
+    里取受访者最晚一次提交的时间。查不到（老数据、或者这份问卷压根没带这类字段）
+    就退回原来的"更新于"，不会崩溃也不会编一个假的发布时间。
+    Added `get_document_response_time()`, which reads the auto-detected "platform
+    info" fields (submission/end time, explicitly excluding "start time" — the two
+    are often both present with opposite meanings) and returns the latest
+    respondent's submission time. Falls back to the old "updated" timestamp when
+    none is found (older data, or a survey export with no such field) — never
+    crashes, never fabricates a publish time.
+
+- **插入图片跟图表的排版和复制/下载合并成一张图** / **Inserted images now share a
+  layout with the chart, and copy/download merges them into one image.**
+  - 真实反馈：只有一张图片时，图片和图表应该放在同一行（图左、图表右），不用像
+    多张图片那样单独占一整行；复制/下载出来的应该是插入的图片和图表合成一张图，
+    不能只有图表自己。
+    Reported: with exactly one inserted image, it should share a row with the
+    chart (image on the left, chart on the right) instead of taking a full row to
+    itself like multiple images do; copying/downloading should produce one merged
+    image containing both the inserted image and the chart, not the chart alone.
+  - 新增 `engine/export_word.py` 的 `compose_question_snapshot_image()`：只有一张
+    图时图左图表右并排（两边按图表高度对齐）；两张图及以上时图片沿用原来的
+    "每行放几张"网格排版，图表整行放在下面。单选/多选题正文图表的复制/下载按钮
+    接了这个合成逻辑，排序题/AI 分类分布这些跟 q_no 不是一一对应的图表不受影响。
+    Added `compose_question_snapshot_image()`: with exactly one image, it sits
+    beside the chart (both aligned to the chart's height); with two or more, images
+    keep the existing per-row grid layout with the chart placed below. The
+    copy/download controls on single- and multi-choice question charts now use
+    this; per-option ranking charts and the AI-classification chart are unaffected
+    since their images aren't a 1:1 match to a single q_no.
+
 ## 2026-09-24 — v1.4.1
 
 - **修复：推理模型（如 MiniMax-M2）的 AI 功能必现解析失败** / **Fixed: AI features

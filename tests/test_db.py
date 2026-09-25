@@ -13,6 +13,7 @@ from engine.db import (
     delete_conclusion,
     delete_document,
     delete_project,
+    get_document_response_time,
     get_test_method,
     init_db,
     list_conclusions,
@@ -622,3 +623,84 @@ def test_backup_database_rotates_old_backups_beyond_keep_count(tmp_path):
     # 应该被自动清掉，只留最近 3 份。
     assert len(backups) == 3
     conn.close()
+
+
+def _add_platform_auto_question(conn, document_id, q_no, source_text_en, order_index, values):
+    [question_id] = add_questions(
+        conn, document_id,
+        [Question(q_no, "open", source_text_en, order_index, "platform_auto")],
+    )
+    add_responses(
+        conn, question_id,
+        pd.DataFrame({"respondent_id": [f"r{i}" for i in range(len(values))], "raw_value": values}),
+    )
+    return question_id
+
+
+class TestGetDocumentResponseTime:
+    """真实反馈"这里需要显示问卷的发布时间...按照最晚填问卷的时间记录"——这批
+    测试锁定 get_document_response_time() 的挑选规则：优先"结束/提交时间"这类
+    列名，明确排除"开始时间"，两者常常同时出现、含义完全相反，选错了"发布时间"
+    会显示成"这份问卷第一个人开始填的时间"而不是"最后一个人填完的时间"。
+    """
+
+    def test_returns_the_latest_submission_time_among_respondents(self, tmp_path):
+        conn = init_db(str(tmp_path / "survey.sqlite"))
+        project_id = create_project(conn, "测试项目", "en", "zh-CN")
+        document_id = add_document(conn, project_id, "responses.csv", "csv")
+        _add_platform_auto_question(
+            conn, document_id, "P1", "提交时间", 0,
+            ["2026-09-17 09:00:00", "2026-09-17 13:06:58", "2026-09-16 08:00:00"],
+        )
+
+        assert get_document_response_time(conn, document_id) == "2026-09-17 13:06:58"
+        conn.close()
+
+    def test_prefers_end_time_column_over_start_time_column(self, tmp_path):
+        conn = init_db(str(tmp_path / "survey.sqlite"))
+        project_id = create_project(conn, "测试项目", "en", "zh-CN")
+        document_id = add_document(conn, project_id, "responses.csv", "csv")
+        # "开始时间"的最大值故意设得比"结束时间"更晚——如果实现选错了列，这条测试
+        # 就能抓到（不是靠两列刚好同值蒙混过关）。
+        _add_platform_auto_question(conn, document_id, "P1", "开始时间", 0, ["2026-09-18 23:00:00"])
+        _add_platform_auto_question(conn, document_id, "P2", "结束时间", 1, ["2026-09-17 13:06:58"])
+
+        assert get_document_response_time(conn, document_id) == "2026-09-17 13:06:58"
+        conn.close()
+
+    def test_falls_back_to_any_parseable_platform_column_when_no_keyword_matches(self, tmp_path):
+        # 有些平台导出的时间列名不落在已知关键词里（比如"作答时间戳"这种）——
+        # 只要值本身能被解析成时间，也应该被用上，不能因为列名没命中关键词就
+        # 直接放弃、退化成 None。
+        conn = init_db(str(tmp_path / "survey.sqlite"))
+        project_id = create_project(conn, "测试项目", "en", "zh-CN")
+        document_id = add_document(conn, project_id, "responses.csv", "csv")
+        _add_platform_auto_question(
+            conn, document_id, "P1", "作答时间戳", 0,
+            ["2026-09-17 09:00:00", "2026-09-17 13:06:58"],
+        )
+
+        assert get_document_response_time(conn, document_id) == "2026-09-17 13:06:58"
+        conn.close()
+
+    def test_returns_none_when_there_are_no_platform_auto_questions(self, tmp_path):
+        conn = init_db(str(tmp_path / "survey.sqlite"))
+        project_id = create_project(conn, "测试项目", "en", "zh-CN")
+        document_id = add_document(conn, project_id, "responses.csv", "csv")
+        add_questions(conn, document_id, [Question("Q1", "single", "偏好", 0, "official")])
+
+        assert get_document_response_time(conn, document_id) is None
+        conn.close()
+
+    def test_returns_none_when_platform_auto_values_are_not_dates(self, tmp_path):
+        # 平台信息列不一定是时间（IP、设备型号……）——大多数值解析失败时不能瞎猜，
+        # 应该退回 None，让调用方去用数据库自己的 updated_at。
+        conn = init_db(str(tmp_path / "survey.sqlite"))
+        project_id = create_project(conn, "测试项目", "en", "zh-CN")
+        document_id = add_document(conn, project_id, "responses.csv", "csv")
+        _add_platform_auto_question(
+            conn, document_id, "P1", "IP", 0, ["192.168.1.1", "10.0.0.2", "8.8.8.8"],
+        )
+
+        assert get_document_response_time(conn, document_id) is None
+        conn.close()

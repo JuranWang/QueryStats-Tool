@@ -64,10 +64,16 @@ EN_MISC: dict[str, str] = {
     '定性访谈': 'Qualitative interviews',
     '案头研究': 'Desk research',
     '这个项目历史上分析过的每份问卷，按最近更新排在最前面。': 'Survey analyses for this project, most recently updated first.',
+    '这个项目历史上分析过的每份问卷，按发布时间排在最前面（取受访者里最晚一次'
+        '提交问卷的时间；查不到发布时间的旧记录按最近更新排序）。':
+        'Survey analyses for this project, most recently published first (the '
+        'latest respondent submission time; older records without a detectable '
+        'publish time fall back to last-updated order).',
     '+ 新建问卷分析': '+ New survey analysis',
     '案头研究还没做，先占个分类位置。': 'Desk research is not available yet. This tab is a placeholder.',
     '这个项目下还没有问卷分析。': 'No survey analyses in this project yet.',
     '更新于 {updated_at}': 'Updated {updated_at}',
+    '发布于 {response_time}': 'Published {response_time}',
     '新标题': 'New title',
     '确定删除「{title}」这份问卷分析？不可恢复。': 'Delete the survey analysis “{title}”? This cannot be undone.',
     '标题不能为空。': 'Title cannot be empty.',
@@ -192,6 +198,10 @@ EN_MISC: dict[str, str] = {
 
 # Keep data identifiers and LLM prompts independent of the interface language.
 NOT_TRANSLATED_MISC: set[str] = {
+    '结束时间', '提交时间', '完成时间', '作答结束', '开始时间',
+    # engine/db.py 的 _RESPONSE_TIME_STRONG_KEYWORDS / _RESPONSE_TIME_EXCLUDE_KEYWORDS：
+    # 拿去匹配上传数据里原始列名（中文平台导出的列名本来就是中文）的关键词，不是
+    # 界面上显示给用户看的文案，不需要跟着界面语言切换。
     '排序题',  # 模块级常量/数据值，显示处翻译
     '中文',  # 语言切换按钮的母语名称，始终显示中文以便识别
     '自定义…',  # 模块级常量/数据值，显示处翻译
