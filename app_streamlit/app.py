@@ -884,6 +884,32 @@ def _context_value_series(ctx_unit: dict, section_df: pd.DataFrame) -> pd.Series
 CHART_HEIGHT = {"pie": "460px", "bar_h": "380px"}
 
 
+def _estimate_wrapped_line_count(text: str, width_px: int, font_size: int = 12) -> int:
+    """估算一段文字在给定像素宽度下，按"逐字符硬换行"（ECharts axisLabel
+    `overflow: 'break'` 就是这么换的，不是按单词换行）会占几行——用来算横条图
+    每个类目该分配多高的空间，见下面 `render_chart` 里的说明。
+
+    宽度估算跟 `engine/export_word.py` 的 `_estimate_text_width_in` 同一个经验
+    比例：中文/中文标点按约等于字号本身的正方形宽度算，英文/数字/空格/斜杠这类
+    窄字符按约一半字号宽度算——不是要精确到像素级别，只要跟 ECharts 实际渲染的
+    换行行为大方向一致（多估一行好过少估一行：少估会导致标签被压扁重叠，多估
+    最多只是留一点没用上的空白，明显是前者更糟）。
+    """
+
+    cjk_width = font_size
+    narrow_width = font_size * 0.55
+    lines = 1
+    current_width = 0.0
+    for ch in text:
+        char_width = cjk_width if ord(ch) > 0x2E80 else narrow_width
+        if current_width > 0 and current_width + char_width > width_px:
+            lines += 1
+            current_width = char_width
+        else:
+            current_width += char_width
+    return max(1, lines)
+
+
 def render_chart(chart_type: str, config: dict, key: str) -> None:
     config["title"] = {"text": "", "left": "center"}  # 标题已经在上面渲染过，图内不重复
     # ECharts 图表组件是用 iframe 渲染的，跟外面"纸张"卡片是两个独立的文档，CSS
@@ -901,9 +927,28 @@ def render_chart(chart_type: str, config: dict, key: str) -> None:
         # 固定的一份高度，选项越多图越高，选项少的时候也不会矮于原来的 380px。
         # 长标签（中英双语拼在一起）也是真实反馈过的问题，跟饼图标签用同一套办法：
         # 允许换行、给固定宽度，不让 ECharts 按单行硬截断。
-        n_options = len(config.get("yAxis", {}).get("data", []))
-        height = f"{max(380, 46 * n_options + 100)}px"
-        config.setdefault("yAxis", {})["axisLabel"] = {"width": 170, "overflow": "break"}
+        #
+        # 真实反馈的 bug："文字多了以后排版异常"——真机截图看到的是相邻两个类目的
+        # 换行标签直接压在一起、叠成一团看不清。根源：ECharts 的类目轴是把总高度
+        # 平均分给每一个类目（不会按"这一条标签有几行"单独给更多空间），上面这行
+        # "每个选项固定分 46px"只够放下一行文字——一旦某条标签的文字长到需要换行
+        # （中英双语拼接的长选项很常见），它实际画出来的高度远超过 46px，就会
+        # 溢出到上一行/下一行类目的位置，看起来像叠在一起。修法：先按同一套字符
+        # 宽度估算（`_estimate_wrapped_line_count`，中文按整字号宽、英文/数字/斜杠
+        # 按约一半字号宽，这跟 ECharts `overflow:'break'` 的硬字符换行行为一致）
+        # 算出"这批标签里最多要换成几行"，每个类目分到的高度按这个最大行数走——
+        # 类目轴是平均分配的，只要有一条标签需要 3 行，所有类目都得按 3 行的高度分，
+        # 不能只放大那一条。
+        labels = config.get("yAxis", {}).get("data", [])
+        n_options = len(labels)
+        axis_label_width = 170
+        line_height = 16
+        max_lines = max((_estimate_wrapped_line_count(str(label), axis_label_width) for label in labels), default=1)
+        per_option_height = max(46, max_lines * line_height + 14)
+        height = f"{max(380, per_option_height * n_options + 100)}px"
+        config.setdefault("yAxis", {})["axisLabel"] = {
+            "width": axis_label_width, "overflow": "break", "lineHeight": line_height,
+        }
     else:
         height = CHART_HEIGHT.get(chart_type, "380px")
 

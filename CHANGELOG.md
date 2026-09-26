@@ -7,6 +7,38 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-26 — v1.5.1
+
+- **修复：横条图选项文字长、需要换行时，相邻类目标签会叠在一起** / **Fixed:
+  long option labels that wrap to multiple lines overlapped the adjacent category
+  on horizontal bar charts.**
+  - 真实反馈（真机截图复现）：多选题/单选题选项超过 5 个时走横条图，选项文字是
+    中英双语拼接的长文本，换行后文字直接压在上一行/下一行的标签上，看起来叠成
+    一团；个别情况下最长的一条标签整个从图上消失。
+    Reported (reproduced from a real screenshot): once a question has enough
+    options to switch to a horizontal bar chart, long bilingual option labels wrap
+    onto multiple lines and visually collide with the neighboring category's
+    label; in some cases the longest label disappeared from the chart entirely.
+  - 根源：横条图给每个类目分配的高度是写死的一份定值（46px，只够放一行字），
+    ECharts 的类目轴是把总高度平均分给每个类目，不会按"这条标签换了几行"单独
+    多给空间——只要有一条标签换行，它实际画出来的高度就会超出这 46px，溢出到
+    相邻类目的位置。
+    Root cause: every category was given a fixed 46px slot (enough for one line),
+    but ECharts divides the axis height equally across categories rather than
+    per-label — once any label wraps, it overflows past its 46px slot into the
+    neighboring category.
+  - 修复：新增 `_estimate_wrapped_line_count()`，跟标题/图例换行用的是同一套
+    字符宽度估算（中文按整字号宽，英文/数字/空格按约一半字号宽），算出这批标签
+    里最多要换成几行，每个类目的高度按这个最大行数分配，不再是固定的一行高度。
+    真机验收：用真实反馈里那道题的原始选项文字复现过 bug（换行后标签互相压线、
+    最长的一条整个消失），确认修复后不再重叠。
+    Fixed: added `_estimate_wrapped_line_count()`, using the same character-width
+    heuristic already used for chart titles/legends, to compute the maximum line
+    count needed across all labels and size every category's slot accordingly
+    instead of a fixed one-line height. Verified live using the exact option text
+    from the real report (reproduced the overlap and the vanishing label first,
+    confirmed both are gone after the fix).
+
 ## 2026-09-25 — v1.5.0
 
 - **问卷列表显示"发布时间"，默认按它排序** / **Survey list now shows a "published"
