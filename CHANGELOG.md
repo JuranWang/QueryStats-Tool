@@ -7,6 +7,41 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-26 — v1.5.2
+
+- **修复：v1.5.1 修好重叠之后，又把图表撑得比例失调** / **Fixed: the v1.5.1
+  overlap fix over-corrected, making charts disproportionately tall.**
+  - 真实反馈（真实截图复现）："第一张图为什么比例失调了"——v1.5.1 为了不让长
+    选项换行后压线，按"这批标签最多要换成几行"统一分配每个类目的高度，但那份
+    换行行数的估算比例是从 `engine/export_word.py` 给 matplotlib 导出图用的
+    那套抄来的（中文按整字号宽、英文按约一半字号宽），跟浏览器 SVG 实际渲染
+    完全是两回事，系统性地高估了换行行数——真机确认"厚实且柔软 / - Thick and
+    plush"这种英文占比高的标签实际不换行，旧比例却算成要换 2 行。ECharts 类目轴
+    是把这个"统一高度"平分给每一个类目，只要有一条被高估，全部类目（包括本来
+    只需要一行的短标签）都会跟着多出一截没用的空白，图表因此显得又高又空旷。
+    Reported (reproduced from a real screenshot): v1.5.1's overlap fix sized every
+    category's slot to the tallest wrapped label, but the wrap-estimate ratios were
+    copied from the matplotlib-based export estimator, not calibrated to actual
+    browser SVG text rendering — it systematically overestimated line counts
+    (verified live: a label like "Thick and plush", mostly English, didn't wrap at
+    all in the browser but the old ratios predicted 2 lines). Since every category
+    shares that one estimated height, any overestimate padded out every row,
+    including short single-line labels, making the whole chart look bloated.
+  - 修复：重新测出两个更准的字符宽度比例（中文约 2/3 字号宽、英文/数字/空格约
+    0.425 倍字号宽，不是之前抄来的 1 倍/0.55 倍）——起一个临时页面，把两批完全
+    独立的真实反馈标签（这次"质地或构造"题的 8 个选项、上一版"图案或设计"题的
+    6 个选项）一起渲染，直接读 ECharts 输出的 SVG 量出真实换行行数校准出来的，
+    在两批数据上都精确匹配，不是只拟合了一批。回归测试也从"不重叠"加了一条
+    "每个类目的带宽不能比这批标签里最长的那条实际需要的高度多太多"，以后再
+    有类似的估算失准会直接测出来，不用等人眼看出"图表看着很空"。
+    Fixed: recalibrated the character-width ratios (CJK ≈ 2/3 of font size, ASCII/
+    digits/spaces ≈ 0.425×, not the borrowed 1×/0.55×) by rendering two
+    independent real-world label sets side by side and reading the actual wrapped
+    line counts straight from ECharts' own SVG output — the new ratios matched
+    exactly on both sets. The regression test now also asserts each category's
+    allocated band isn't padded far beyond what the tallest real label needs, so a
+    future miscalibration shows up as a test failure instead of a visual complaint.
+
 ## 2026-09-26 — v1.5.1
 
 - **修复：横条图选项文字长、需要换行时，相邻类目标签会叠在一起** / **Fixed:
