@@ -131,6 +131,43 @@ EN_APP: dict[str, str] = {
     "7. 受访者个人视角": "7. Individual responses",
     "8. 交叉分析": "8. Crosstab analysis",
     "手动配置，不预设。维度数量不限——默认每个选项各自一组，可以合并/改名/增删。「对比到哪道题」单选、多选题都支持。": "Configure as many comparison groups as needed. Each option starts as a separate group; you can combine, rename, add, or remove groups. Both single-choice and multi-select questions can be used for comparison.",
+    "8+. 题组循环分析": "8+. Repeated round analysis",
+    "题组循环分析": "Repeated round analysis",
+    "问卷里同一批题目按轮次重复问了好几遍（比如「这一步做什么」→「去了哪个平台」"
+        "问了 5 轮）——在这里把每一轮对应的两道题配对起来，工具会自动折叠成一张长表，"
+        "统计「不分轮次的整体分布」和「做某个动作的人主要去了哪个平台」。":
+        "For questionnaires that repeat the same block of questions across several "
+        "rounds (for example, “what did you do” → “where did you go” asked 5 times), "
+        "pair up each round's two questions here. The tool folds them into one long "
+        "table and computes the pooled distribution across all rounds, plus which "
+        "platform people used for a given action.",
+    "这份问卷没有可用的单选题——题组循环分析需要至少一道单选题当「动作」、一道单选题当「平台」。":
+        "This survey has no usable single-choice questions — repeated round analysis "
+        "needs at least one single-choice question for “action” and one for “platform”.",
+    "题组循环板块 {n}": "Repeated round block {n}",
+    "第 {n} 轮｜动作题": "Round {n} — action question",
+    "第 {n} 轮｜平台题": "Round {n} — platform question",
+    "（未选择）": "(not selected)",
+    "+ 增加一轮": "+ Add a round",
+    "－ 删除最后一轮": "− Remove last round",
+    "哪些选项代表「到这里就结束了」（比如「我已经可以下单了」）？这类选项"
+        "不会被当成一次「动作」统计，只用来算路径长度/退出点。":
+        "Which options mean “I'm done here” (e.g. “I was ready to order”)? These "
+        "options are excluded from the action distribution and used only to compute "
+        "path length / exit point.",
+    "生成题组循环分析": "Run repeated round analysis",
+    "配对成功 {n} 轮，长表里一共 {respondents} 位受访者至少留下过一次真实动作记录。":
+        "{n} round(s) paired successfully, covering {respondents} respondent(s) with at least one real action.",
+    "不分轮次：整体动作分布": "Pooled action distribution (all rounds combined)",
+    "n = {n}（动作次数，不是人数——同一个人不同轮次做同一件事会各算一次）":
+        "n = {n} (action occurrences, not respondents — the same person doing the same thing in a different round counts again)",
+    "动作 × 平台：做这件事的人主要去了哪个平台": "Action × platform: where people went for that action",
+    "每一列的分母是「做过这个动作的人数」，不是这个动作在长表里出现的次数。":
+        "Each column's denominator is the number of people who did that action, not how many times it appears in the long table.",
+    "没有任何一轮同时留下了动作和平台的作答，没法算这张交叉表。":
+        "No round has both an action and a platform answer, so this crosstab cannot be computed.",
+    "路径长度分布（真正走了几轮才停下）": "Path length distribution (how many rounds before stopping)",
+    "+ 新增题组循环板块": "+ Add a repeated round block",
     "9. AI 洞察": "9. AI insights",
     "不自动生成。点下面按钮才会调用 AI；引用了编造数字的洞察会被整条丢弃，不会显示出来。": "Insights are generated only when you click the button. Any insight containing unverified numbers is discarded.",
     "生成 AI 洞察": "Generate AI insights",
@@ -298,6 +335,7 @@ NOT_TRANSLATED_APP: set[str] = {
     "6. 完整数据表格",  # 模块级显示常量，在使用处翻译以支持语言切换
     "7. 受访者个人视角",  # 模块级显示常量，在使用处翻译以支持语言切换
     "8. 交叉分析",  # 模块级显示常量，在使用处翻译以支持语言切换
+    "8+. 题组循环分析",  # 模块级显示常量，在使用处翻译以支持语言切换
     "9. AI 洞察",  # 模块级显示常量，在使用处翻译以支持语言切换
     "AI 分类",  # DataFrame 内部列名，保持数据键不变，仅在显示处翻译
     "Credamo 见数",  # 自动推断的平台来源数据，会存入方法设置；保持原值

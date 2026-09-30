@@ -509,6 +509,7 @@ SIDEBAR_NAV = [
     ("6. 完整数据表格", "sec6"),
     ("7. 受访者个人视角", "sec7"),
     ("8. 交叉分析", "sec8"),
+    ("8+. 题组循环分析", "sec8loop"),
     ("9. AI 洞察", "sec9"),
     ("10. 受访者信息", "sec10"),
     ("11. 导出", "sec11"),
@@ -1016,6 +1017,72 @@ def dimension_stats_result(group_col: pd.Series, group_order: list[str]) -> list
         pct = round(n / n_total * 100, 1) if n_total else 0.0
         rows.append({"option": name, "n": n, "pct": pct, "count_pct_label": stats.format_count_pct(n, n_total)})
     return rows
+
+
+def _compute_loop_group_result(
+    rounds: list[dict], exit_values: list[str], q_options: dict[str, dict], df_valid: pd.DataFrame,
+) -> dict | None:
+    """真实反馈的"matrix 逻辑"问卷（同一批题目按轮次重复问了好几遍，比如"这一步
+    做什么→去了哪个平台"问了 5 轮）：把用户挑的每一轮"动作题+平台题"，用
+    `stats.reshape_repeated_rounds` 折叠成一张"每人每轮一行"的长表，再在这张长表
+    上算三样东西——
+
+    1. `action_dist`：不分第几轮，动作整体分布（排除用户标成"退出/终止"的选项，
+       这类选项代表"决定不再做了"，不是一次真正的"做了什么"，跟其它动作混在
+       一起统计会失真）。
+    2. `crosstab_table`：动作 × 平台交叉表——真正回答"做某个动作的人主要去了
+       哪个平台"，分母是"做过这个动作的人数"（`stats.crosstab_counts` 的
+       group_col 就是动作），不是"这个动作在长表里出现的行数"。
+    3. `path_dist`：路径长度分布（这个人真正走了几轮）——用 `single_choice_stats`
+       的 order 参数固定按轮数从少到多排列，不按人数多少排序，不然看着会以为
+       "路径长度"是一个无序的分类变量。
+
+    q_options 跟 `render_crosstab_side` 里同名变量的形状一样：{"Q_no｜题干": unit}。
+    rounds 里没填满动作题+平台题的轮次直接跳过；一轮都没配全就返回 None
+    （调用方据此禁用"生成"按钮）。
+    """
+
+    valid_rounds = [
+        r for r in rounds
+        if r.get("action_q") in q_options and r.get("platform_q") in q_options
+    ]
+    if not valid_rounds:
+        return None
+
+    round_specs = [
+        {
+            "action_col": q_options[r["action_q"]]["columns"][0],
+            "platform_col": q_options[r["platform_q"]]["columns"][0],
+        }
+        for r in valid_rounds
+    ]
+    action_cols = [spec["action_col"] for spec in round_specs]
+
+    long_df = stats.reshape_repeated_rounds(df_valid, round_specs)
+    exit_set = set(exit_values)
+    action_only = long_df[~long_df["action"].isin(exit_set)] if exit_set else long_df
+    action_dist = stats.single_choice_stats(action_only["action"])
+
+    paired = long_df.dropna(subset=["platform"])
+    crosstab_table = (
+        stats.crosstab_counts(paired, group_col="action", answer_col="platform")
+        if len(paired) else None
+    )
+
+    path_df = stats.loop_path_length_stats(df_valid, action_cols, exit_values=exit_set)
+    path_order = [str(n) for n in range(0, len(valid_rounds) + 1)]
+    path_dist = stats.single_choice_stats(path_df["path_length"].astype(str), order=path_order)
+    path_dist = [row for row in path_dist if row["n"] > 0]
+
+    return {
+        "action_dist": action_dist,
+        "n_action_occurrences": len(action_only),
+        "crosstab_table": crosstab_table,
+        "path_dist": path_dist,
+        "n_path_respondents": len(path_df),
+        "n_rounds": len(valid_rounds),
+        "n_respondents_in_long_table": int(long_df["respondent_id"].nunique()),
+    }
 
 
 def _compute_crosstab_block_result(left_ctx: dict, right_ctx: dict) -> dict:
@@ -1606,6 +1673,68 @@ def _persist_crosstab_blocks() -> None:
     persistence.save_crosstab_blocks(
         _get_db_conn(), document_id, _crosstab_blocks_payload(), state_payload=_crosstab_state_payload()
     )
+
+
+def _loop_group_result_payload(result: dict | None) -> dict | None:
+    """`result["crosstab_table"]` 是个 DataFrame，跟 crosstab_blocks 的 `table` 一样
+    不能直接塞进 JSON——用同一招（`to_dict(orient="split")` + 单独存 index/columns
+    的 name），`action_dist`/`path_dist` 本来就是纯 list[dict]，原样存。
+    """
+
+    if result is None:
+        return None
+    table = result["crosstab_table"]
+    return {
+        **result,
+        "crosstab_table": None if table is None else {
+            "data": table.to_dict(orient="split"),
+            "index_name": table.index.name,
+            "columns_name": table.columns.name,
+        },
+    }
+
+
+def _loop_group_result_from_payload(payload: dict | None) -> dict | None:
+    """`_loop_group_result_payload` 的反函数——"打开历史分析"时把存好的题组循环
+    结果灌回 session_state 用。"""
+
+    if payload is None:
+        return None
+    result = dict(payload)
+    table_payload = result.pop("crosstab_table")
+    if table_payload is None:
+        result["crosstab_table"] = None
+    else:
+        table = pd.DataFrame(**table_payload["data"])
+        table.index.name = table_payload.get("index_name")
+        table.columns.name = table_payload.get("columns_name")
+        result["crosstab_table"] = table
+    return result
+
+
+def _loop_groups_payload() -> list[dict]:
+    """即时保存和"打开历史分析"共用编码，跟 `_crosstab_blocks_payload` 同一个思路。"""
+
+    return [
+        {
+            "id": block["id"],
+            "title": block.get("title", ""),
+            "rounds": [dict(r) for r in block["rounds"]],
+            "exit_values": list(block.get("exit_values", [])),
+            "result": _loop_group_result_payload(block.get("result")),
+        }
+        for block in st.session_state.get("loop_groups", [])
+    ]
+
+
+def _persist_loop_groups() -> None:
+    """新增、删除、成功生成后直接保存正式 extras，不等手动保存或草稿——
+    跟交叉分析板块同一条"用户点一下、得到一个值得保留的产出"的原则。"""
+
+    document_id = st.session_state.get("saved_document_id")
+    if document_id is None:
+        return
+    persistence.save_loop_groups(_get_db_conn(), document_id, _loop_groups_payload())
 
 
 def _render_zoomable_image(image_bytes: bytes, width_pct: int) -> None:
@@ -2311,6 +2440,21 @@ def _restore_extras(extras: dict) -> None:
         st.session_state[key] = value["groups"]
         st.session_state[f"{key}_rest"] = value["include_rest"]
 
+    restored_loop_groups = []
+    for entry in extras.get("loop_groups", []):
+        restored_loop_groups.append({
+            "id": entry["id"],
+            "title": entry.get("title", ""),
+            "rounds": [dict(r) for r in entry.get("rounds", [])],
+            "exit_values": list(entry.get("exit_values", [])),
+            "result": _loop_group_result_from_payload(entry.get("result")),
+        })
+    if "loop_groups" in extras:
+        st.session_state["loop_groups"] = restored_loop_groups
+    st.session_state["loop_groups_next_block_id"] = max(
+        (int(b["id"]) for b in restored_loop_groups), default=0
+    ) + 1
+
 
 # ---------------------------------------------------------------------------
 # 1. 上传
@@ -2905,6 +3049,7 @@ with st.container(key="section_paper_6"):
             "label_overrides": label_overrides,
             "crosstab_blocks": _crosstab_blocks_payload(),
             "crosstab_state": _crosstab_state_payload(),
+            "loop_groups": _loop_groups_payload(),
         }
 
 
@@ -3286,6 +3431,157 @@ with st.container(key="section_paper_8"):
         st.session_state["crosstab_blocks"].append({"id": new_id, "left": {"doc_id": None, "question_key": None}, "right": {"doc_id": None, "question_key": None}, "result": None})
         _persist_crosstab_blocks()
         st.rerun()
+
+# ---------------------------------------------------------------------------
+# 8+. 题组循环分析——真实反馈的"matrix 逻辑"问卷：同一批题目按轮次重复问了
+#     好几遍（比如"这一步做什么→去了哪个平台"问了 5 轮）。现有的⑧交叉分析
+#     只能对比两道互相独立的题，没法把 N 轮"折叠"到一起统计——这里单独开一套
+#     板块：用户挑每一轮对应的"动作题"+"平台题"（都是这份文档里已经正常导入的
+#     单选题，不需要改上传/映射步骤），工具自动展开成一张"每人每轮一行"的长表
+#     （`stats.reshape_repeated_rounds`），算三样东西：不分轮次的整体动作分布、
+#     动作×平台交叉表（回答"做这件事的人主要去了哪"）、路径长度分布。
+# ---------------------------------------------------------------------------
+
+with st.container(key="section_paper_8loop"):
+    st.header(t("题组循环分析"), anchor="sec8loop")
+    st.caption(t(
+        "问卷里同一批题目按轮次重复问了好几遍（比如「这一步做什么」→「去了哪个平台」"
+        "问了 5 轮）——在这里把每一轮对应的两道题配对起来，工具会自动折叠成一张长表，"
+        "统计「不分轮次的整体分布」和「做某个动作的人主要去了哪个平台」。"
+    ))
+    st.session_state.setdefault("loop_groups", [])
+    st.session_state.setdefault("loop_groups_next_block_id", 1)
+
+    loop_q_options = {f"{u['display_no']}｜{u['title']}": u for u in units if u["kind"] == "single"}
+    if not loop_q_options:
+        st.info(t("这份问卷没有可用的单选题——题组循环分析需要至少一道单选题当「动作」、一道单选题当「平台」。"))
+    else:
+        loop_q_keys = list(loop_q_options)
+        delete_loop_block_id = None
+        for position, block in enumerate(st.session_state["loop_groups"]):
+            block_id = block["id"]
+            with st.container(border=True, key=f"loop_block_{block_id}"):
+                title_col, del_col = st.columns([6, 1])
+                title_col.markdown(f"**{t('题组循环板块 {n}', n=position + 1)}**")
+                if del_col.button(t("删除这个板块"), key=f"loop_{block_id}_delete_block"):
+                    delete_loop_block_id = block_id
+
+                rounds = block["rounds"]
+                for round_index, round_cfg in enumerate(rounds):
+                    action_col, platform_col = st.columns(2)
+                    with action_col:
+                        current = round_cfg.get("action_q")
+                        picked = st.selectbox(
+                            t("第 {n} 轮｜动作题", n=round_index + 1),
+                            [None] + loop_q_keys,
+                            index=(loop_q_keys.index(current) + 1) if current in loop_q_options else 0,
+                            format_func=lambda v: t("（未选择）") if v is None else v,
+                            key=f"loop_{block_id}_round_{round_index}_action",
+                        )
+                        round_cfg["action_q"] = picked
+                    with platform_col:
+                        current = round_cfg.get("platform_q")
+                        picked = st.selectbox(
+                            t("第 {n} 轮｜平台题", n=round_index + 1),
+                            [None] + loop_q_keys,
+                            index=(loop_q_keys.index(current) + 1) if current in loop_q_options else 0,
+                            format_func=lambda v: t("（未选择）") if v is None else v,
+                            key=f"loop_{block_id}_round_{round_index}_platform",
+                        )
+                        round_cfg["platform_q"] = picked
+
+                round_btn_col1, round_btn_col2 = st.columns(2)
+                if round_btn_col1.button(
+                    t("+ 增加一轮"), key=f"loop_{block_id}_add_round", disabled=len(rounds) >= 8
+                ):
+                    rounds.append({"action_q": None, "platform_q": None})
+                    st.rerun()
+                if round_btn_col2.button(
+                    t("－ 删除最后一轮"), key=f"loop_{block_id}_remove_round", disabled=len(rounds) <= 1
+                ):
+                    rounds.pop()
+                    st.rerun()
+
+                # "退出/终止选项"的候选名单从已经配好的动作题里现场取值，不用手打
+                # 文字——真实数据里这类选项的措辞可能因题目而略有不同（"我可以
+                # 下单了"/"那就是了"之类），列出来选比要求用户记住精确文案可靠。
+                configured_action_cols = [
+                    loop_q_options[r["action_q"]]["columns"][0]
+                    for r in rounds if r.get("action_q") in loop_q_options
+                ]
+                exit_candidates = sorted(
+                    {v for col in configured_action_cols for v in df_valid[col].dropna().unique().tolist()},
+                    key=str,
+                )
+                block["exit_values"] = st.multiselect(
+                    t("哪些选项代表「到这里就结束了」（比如「我已经可以下单了」）？这类选项"
+                      "不会被当成一次「动作」统计，只用来算路径长度/退出点。"),
+                    exit_candidates,
+                    default=[v for v in block.get("exit_values", []) if v in exit_candidates],
+                    key=f"loop_{block_id}_exit_values",
+                )
+
+                can_generate = any(
+                    r.get("action_q") in loop_q_options and r.get("platform_q") in loop_q_options
+                    for r in rounds
+                )
+                if st.button(
+                    t("生成题组循环分析"), key=f"loop_{block_id}_run", type="primary", disabled=not can_generate
+                ):
+                    block["result"] = _compute_loop_group_result(
+                        rounds, block["exit_values"], loop_q_options, df_valid
+                    )
+                    _persist_loop_groups()
+
+                result = block.get("result")
+                if result is not None:
+                    st.caption(t(
+                        "配对成功 {n} 轮，长表里一共 {respondents} 位受访者至少留下过一次真实动作记录。",
+                        n=result["n_rounds"], respondents=result["n_respondents_in_long_table"],
+                    ))
+
+                    st.markdown(f"**{t('不分轮次：整体动作分布')}**")
+                    action_chart_type = chart_spec.choose_chart_type("single", len(result["action_dist"]))
+                    action_config = chart_spec.build_chart_config(
+                        action_chart_type, result["action_dist"], "",
+                        t("n = {n}（动作次数，不是人数——同一个人不同轮次做同一件事会各算一次）", n=result["n_action_occurrences"]),
+                        color_palette=_active_chart_palette(),
+                    )
+                    render_chart(action_chart_type, action_config, key=f"loop_{block_id}_action_chart")
+
+                    if result["crosstab_table"] is not None:
+                        st.markdown(f"**{t('动作 × 平台：做这件事的人主要去了哪个平台')}**")
+                        st.caption(t("每一列的分母是「做过这个动作的人数」，不是这个动作在长表里出现的次数。"))
+                        st.dataframe(result["crosstab_table"])
+                    else:
+                        st.info(t("没有任何一轮同时留下了动作和平台的作答，没法算这张交叉表。"))
+
+                    if result["path_dist"]:
+                        st.markdown(f"**{t('路径长度分布（真正走了几轮才停下）')}**")
+                        path_chart_type = chart_spec.choose_chart_type("single", len(result["path_dist"]))
+                        path_config = chart_spec.build_chart_config(
+                            path_chart_type, result["path_dist"], "",
+                            t("n = {n}", n=result["n_path_respondents"]),
+                            color_palette=_active_chart_palette(),
+                        )
+                        render_chart(path_chart_type, path_config, key=f"loop_{block_id}_path_chart")
+
+        if delete_loop_block_id is not None:
+            st.session_state["loop_groups"] = [
+                b for b in st.session_state["loop_groups"] if b["id"] != delete_loop_block_id
+            ]
+            _persist_loop_groups()
+            st.rerun()
+        if st.button(t("+ 新增题组循环板块"), key="loop_add_block"):
+            new_id = str(st.session_state["loop_groups_next_block_id"])
+            st.session_state["loop_groups_next_block_id"] += 1
+            st.session_state["loop_groups"].append({
+                "id": new_id, "title": "",
+                "rounds": [{"action_q": None, "platform_q": None}, {"action_q": None, "platform_q": None}],
+                "exit_values": [], "result": None,
+            })
+            _persist_loop_groups()
+            st.rerun()
 
 # ---------------------------------------------------------------------------
 # 9. ⑨ AI 洞察——不自动展示，点按钮才生成；每条洞察引用的数字都要先在 Python 算好的

@@ -7,6 +7,47 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-09-29 — v1.6.0
+
+- **新增「题组循环分析」，支持"matrix 逻辑"问卷（同一批题目按轮次重复问了好几
+  遍）** / **New "repeated round analysis": support for "matrix" style
+  questionnaires where the same block of questions repeats across several
+  rounds.**
+  - 真实反馈：一份消费者购买路径问卷，每一轮三道题——这一步做什么（动作）、
+    去哪个平台、为什么去那儿，最少两轮最多五轮。用户想知道两件事："不分第
+    几轮，大家整体会做什么"，以及"做某个具体动作的人主要去了哪个平台"。
+    现有的⑧交叉分析只能对比两道互相独立的题，没法把 5 轮"折叠"到一起统计——
+    Q9/Q12/Q15/Q18/Q21（5 轮"做什么"）本质是同一个逻辑维度的 5 次重复，不是
+    5 道独立的题。
+    Reported: a consumer purchase-journey survey asks the same three questions
+    (what did you do, where did you go, why) for 2 to 5 repeating rounds. The
+    user wanted two things: the pooled action distribution regardless of which
+    round it happened in, and which platform people used for a specific action.
+    The existing crosstab feature can only compare two independent questions, so
+    it couldn't fold 5 repeated rounds into one analysis.
+  - 新增 `engine/stats.py` 的 `reshape_repeated_rounds()`（把 N 轮"动作题+平台题"
+    展开成一张"每人每轮一行"的长表）和 `loop_path_length_stats()`（路径长度/
+    退出点：这个人真正走了几轮、在哪一轮主动选择"到这里就结束了"）。长表建好
+    之后，动作分布复用现成的 `single_choice_stats()`，动作×平台交叉表直接复用
+    现成的 `crosstab_counts()`——不是重新发明一套统计逻辑。
+    Added `reshape_repeated_rounds()` (folds N rounds of action+platform columns
+    into a long table, one row per respondent per round) and
+    `loop_path_length_stats()` (path length and exit point: how many rounds a
+    respondent really went through, and at which round they chose to stop) to
+    `engine/stats.py`. Once reshaped, the action distribution reuses the existing
+    `single_choice_stats()` and the action×platform crosstab reuses the existing
+    `crosstab_counts()` — no new statistics logic was invented.
+  - 新增「8+. 题组循环分析」板块（在⑧交叉分析下面）：挑每一轮对应的"动作题"+
+    "平台题"（都是这份文档已经正常导入的单选题，不需要改上传/映射步骤），标记
+    哪些选项算"退出/终止"，一键生成整体动作分布、动作×平台交叉表、路径长度
+    分布三张结果，跟交叉分析板块一样支持多个板块、即时落库。
+    Added a new "8+. Repeated round analysis" section (below section 8): pick
+    each round's action and platform question (both are ordinary single-choice
+    questions already imported normally), mark which options mean "exit", and
+    generate the pooled action distribution, the action×platform crosstab, and
+    the path-length distribution in one click. Supports multiple named blocks and
+    saves immediately, same as the crosstab blocks.
+
 ## 2026-09-26 — v1.5.2
 
 - **修复：v1.5.1 修好重叠之后，又把图表撑得比例失调** / **Fixed: the v1.5.1

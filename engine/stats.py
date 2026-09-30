@@ -224,3 +224,92 @@ def crosstab_counts(
     ]
     formatted.index.name = answer_col
     return formatted
+
+
+def reshape_repeated_rounds(df: pd.DataFrame, rounds: list[dict[str, str]]) -> pd.DataFrame:
+    """把"多轮重复题组"（比如"你先做了什么→去了哪个平台"问了 5 轮）的 N 组并列列，
+    展开成一张"每人每轮一行"的长表——真实反馈的问卷结构："matrix 逻辑，一个方向是
+    第几轮大家会做什么，另一个方向是做某件事的人主要去了哪个平台"。这两个问题
+    现在的"一列=一道独立的题"模型都回答不了：Q9/Q12/Q15/Q18/Q21（第 1～5 轮"做
+    什么"）本质是同一个逻辑维度的 5 次重复，不是 5 道互相独立的题，要先把它们
+    "折叠"到一起才能统计"不分第几轮，做这件事的人整体去了哪"。
+
+    rounds：每一轮一个 dict，至少要有 "action_col"（这一轮"做了什么"对应的原始
+    列名），可选 "platform_col"（这一轮"去了哪个平台"对应的列名——没有配对的
+    平台列时可以不传，返回表里对应行的 platform 就是空值）。轮次顺序按 rounds
+    列表的顺序编号（从 1 开始），不依赖列名本身有没有数字。
+
+    跳过的行只有一种：这一轮 action 本身是空值（受访者根本没走到这一轮，正常的
+    问卷跳转逻辑）。action 是"退出"这类终止选项（比如"我可以下单了"）时，
+    对应的 platform 列在问卷里本来就是跳过的、留空——不需要在这里专门识别
+    "退出选项是什么文字"去剔除，返回的长表里这一行会带着空的 platform，调用方
+    要算"动作×平台"交叉表时自己 dropna 掉 platform 就行（这份长表本身对"退出"
+    没有任何预设，只是如实展开原始数据）。
+
+    返回列：respondent_id（原始 DataFrame 的行索引，是长表和后续任何其它派生
+    结果对齐的关键）、round（1-based）、action、platform（没配对 platform_col
+    时全部是 pd.NA）。
+    """
+
+    frames = []
+    for round_index, spec in enumerate(rounds, start=1):
+        action_col = spec["action_col"]
+        platform_col = spec.get("platform_col")
+        frame = pd.DataFrame({
+            "respondent_id": df.index,
+            "round": round_index,
+            "action": df[action_col].values,
+            "platform": df[platform_col].values if platform_col else pd.NA,
+        })
+        frames.append(frame)
+    long_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
+        columns=["respondent_id", "round", "action", "platform"]
+    )
+
+    def _blank(series: pd.Series) -> pd.Series:
+        return series.isna() | (series.astype(str).str.strip() == "")
+
+    long_df = long_df[~_blank(long_df["action"])].reset_index(drop=True)
+    long_df.loc[_blank(long_df["platform"]), "platform"] = pd.NA
+    return long_df
+
+
+def loop_path_length_stats(
+    df: pd.DataFrame, action_cols: list[str], exit_values: Iterable[str] | None = None
+) -> pd.DataFrame:
+    """算"多轮重复题组"里每个受访者真正走了几轮（路径长度）、在哪一轮选了"退出"
+    选项——真实反馈里"路径长度""退出点"是重点分析对象："哪一步之后人们觉得
+    '够了可以买了'，这是转化临界点"。
+
+    action_cols 的顺序就是轮次顺序（第 1 轮到第 N 轮）。一轮算"真正走过"要满足：
+    这一轮 action 不是空值，也不在 exit_values 里——遇到空值或退出选项就停止计数
+    （退出选项本身不算一轮"做了什么"，是"决定不再做了"这个终止动作，跟路径长度
+    是两回事，所以不计入 path_length，但会记在 exit_round 里）。exit_values 不传
+    就是空集合，这时候 path_length 就是"这个人一路填到第几轮才第一次留空"。
+
+    返回列：respondent_id、path_length（真正走过几轮，最小 0）、exit_round
+    （在第几轮选了退出选项，没选过就是 pd.NA——包括"一路走满全部轮次都没退出"
+    和"半路留空但不是因为选了退出选项"这两种情况，都算 pd.NA，因为这两种都不是
+    "主动选择退出"）。
+    """
+
+    exit_set = set(exit_values or [])
+    path_lengths = []
+    exit_rounds = []
+    for _, row in df[action_cols].iterrows():
+        length = 0
+        exit_round = pd.NA
+        for round_index, value in enumerate(row, start=1):
+            if pd.isna(value) or str(value).strip() == "":
+                break
+            if str(value).strip() in exit_set:
+                exit_round = round_index
+                break
+            length += 1
+        path_lengths.append(length)
+        exit_rounds.append(exit_round)
+    return pd.DataFrame({
+        "respondent_id": df.index,
+        "path_length": path_lengths,
+        "exit_round": exit_rounds,
+    })

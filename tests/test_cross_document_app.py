@@ -378,7 +378,10 @@ def test_grouped_bar_snapshot_cache_tracks_data_and_palette(tmp_path):
 def test_manual_save_payload_keeps_blocks_images_and_named_axes():
     ns = functions()
     for node in ast.walk(TREE):
-        if isinstance(node, ast.FunctionDef) and node.name in {"_extras_payload", "_images_payload", "_image_mime", "_collect_ai_results_for"}:
+        if isinstance(node, ast.FunctionDef) and node.name in {
+            "_extras_payload", "_images_payload", "_image_mime", "_collect_ai_results_for",
+            "_loop_groups_payload", "_loop_group_result_payload", "_loop_group_result_from_payload",
+        }:
             exec(ast.get_source_segment(SOURCE, node), ns)
     import mimetypes
     ns.update(units=[], mimetypes=mimetypes)

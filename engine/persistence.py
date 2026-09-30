@@ -282,6 +282,20 @@ def save_crosstab_blocks(
     touch_document(conn, document_id)
 
 
+def save_loop_groups(conn: sqlite3.Connection, document_id: int, blocks_payload: list[dict]) -> None:
+    """整份覆盖当前"题组循环分析"板块（真实反馈的"matrix 逻辑"问卷：同一批题目
+    按轮次重复问了好几遍，比如"这一步做什么→去了哪个平台"问了 5 轮），保留图片、
+    AI 结果、交叉分析板块；删除的板块也从正式库里消失。跟 `save_crosstab_blocks`
+    是同一个模式（整份覆盖 + 保留其它 extras 字段），只是存到 extras 的另一个 key，
+    两者互不影响。
+    """
+
+    extras = read_document_extras(conn, document_id) or {}
+    extras["loop_groups"] = blocks_payload
+    write_document_extras(conn, document_id, extras)
+    touch_document(conn, document_id)
+
+
 def _load_question_values(conn: sqlite3.Connection, question: sqlite3.Row) -> list:
     """单选/数值/开放题用——一道题只对应一列。多选题走 `_load_multi_question`，
     不用这个函数（多选题要重建出好几列，不是一列）。"""

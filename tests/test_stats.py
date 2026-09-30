@@ -4,10 +4,12 @@ from engine.stats import (
     crosstab_counts,
     format_count_pct,
     format_pct,
+    loop_path_length_stats,
     multi_choice_stats,
     numeric_stats,
     ranking_option_stats,
     ranking_table,
+    reshape_repeated_rounds,
     single_choice_stats,
 )
 
@@ -277,3 +279,141 @@ def test_matching_question_candidates_kind_similarity_and_stable_ties():
     assert candidates == original
     assert matching_question_candidates({'kind': 'multi', 'title': ''}, candidates) == []
     assert matching_question_candidates(current, []) == []
+
+
+# 真实反馈的问卷结构（"Home Shopping Study"）：受访者按时间顺序还原购买路径，
+# 每一轮三道题——这一步做什么（action）、去哪个平台（platform）、为什么去那儿
+# （开放题，这两个函数用不上）。最少两轮，最多五轮，第三轮起出现"退出"选项。
+# 下面的列名/选项文字直接照抄真实问卷（不是编的），只是把受访人数缩小成方便
+# 手算的规模。
+EXIT_OPTION = "That was it — I was ready to buy"
+ROUND_ACTION_COLS = ["Q9", "Q12", "Q15", "Q18", "Q21"]
+ROUND_PLATFORM_COLS = ["Q10", "Q13", "Q16", "Q19", "Q22"]
+ROUNDS = [
+    {"action_col": a, "platform_col": p} for a, p in zip(ROUND_ACTION_COLS, ROUND_PLATFORM_COLS)
+]
+
+
+def _rug_journey_df() -> pd.DataFrame:
+    # 4 位受访者，路径长度分别是 2/3/2/5（最短 2 轮、最长 5 轮，覆盖"最少两轮，
+    # 最多五轮"这个真实约束），其中受访者 B 在第 3 轮主动选了退出选项。
+    return pd.DataFrame({
+        "Q9": [
+            "Looking for ideas on what style would work",
+            "Getting a sense of what rugs like this cost",
+            "Looking for ideas on what style would work",
+            "Getting a sense of what rugs like this cost",
+        ],
+        "Q10": [
+            "Pinterest",
+            "An online retailer (Amazon, Wayfair, Target, West Elm, etc.)",
+            "Pinterest",
+            "An online retailer (Amazon, Wayfair, Target, West Elm, etc.)",
+        ],
+        "Q12": [
+            "Getting a sense of what rugs like this cost",
+            "Reading what buyers said about a brand or a rug",
+            "Getting a sense of what rugs like this cost",
+            "Figuring out what material to get",
+        ],
+        "Q13": [
+            "An online retailer (Amazon, Wayfair, Target, West Elm, etc.)",
+            "Reddit",
+            "An online retailer (Amazon, Wayfair, Target, West Elm, etc.)",
+            "Google search",
+        ],
+        # respondent A：第 2 轮之后没再填，正常"只走了 2 轮"（不是主动退出）。
+        "Q15": [None, EXIT_OPTION, None, "Reading what buyers said about a brand or a rug"],
+        "Q16": [None, None, None, "Reddit"],
+        "Q18": [None, None, None, "Looking for a better price on one I'd found"],
+        "Q19": [None, None, None, "An online retailer (Amazon, Wayfair, Target, West Elm, etc.)"],
+        "Q21": [None, None, None, EXIT_OPTION],
+        "Q22": [None, None, None, None],
+    })
+
+
+class TestReshapeRepeatedRounds:
+    """锁定"把 N 轮并列列展开成长表"这个核心行为——这是真实反馈里"matrix 逻辑"
+    两个分析方向共同的数据基础，两个方向的统计（动作分布、动作×平台交叉）都是
+    在这张长表上面算出来的，不是分别重新解析一遍原始列。
+    """
+
+    def test_skips_rounds_the_respondent_never_reached(self):
+        df = _rug_journey_df()
+        long_df = reshape_repeated_rounds(df, ROUNDS)
+        # respondent 0（A）只填了第 1、2 轮，第 3～5 轮全是空值——长表里就该只有
+        # 这个人的 2 行，不该出现"action 是 None"这种占位行。
+        rows_for_a = long_df[long_df["respondent_id"] == 0]
+        assert rows_for_a["round"].tolist() == [1, 2]
+
+    def test_exit_option_row_is_kept_with_blank_platform(self):
+        df = _rug_journey_df()
+        long_df = reshape_repeated_rounds(df, ROUNDS)
+        # respondent 1（B）第 3 轮选了退出选项——这一行的 action 应该原样保留
+        # （长表本身对"退出"没有任何预设，只是如实展开），但 platform 是空的
+        # （问卷设计里选了退出，后面的"去哪个平台"这道题本来就会被跳过）。
+        exit_row = long_df[(long_df["respondent_id"] == 1) & (long_df["round"] == 3)]
+        assert len(exit_row) == 1
+        assert exit_row.iloc[0]["action"] == EXIT_OPTION
+        assert pd.isna(exit_row.iloc[0]["platform"])
+
+    def test_pooled_action_distribution_counts_across_all_rounds(self):
+        # 真实反馈的第一个分析方向："不分第几轮，大家整体会做什么"——同一个
+        # 动作在不同人身上可能发生在不同轮次，要能合并统计，不能只看某一轮。
+        df = _rug_journey_df()
+        long_df = reshape_repeated_rounds(df, ROUNDS)
+        overall = single_choice_stats(long_df["action"])
+        counts = {row["option"]: row["n"] for row in overall}
+        # "Getting a sense of what rugs like this cost" 在 respondent 1、3 的第 1
+        # 轮和 respondent 0、2 的第 2 轮都出现过，一共 4 次，尽管出现在不同的
+        # 轮次里、不同的人身上。
+        assert counts["Getting a sense of what rugs like this cost"] == 4
+
+    def test_action_by_platform_crosstab_answers_where_people_go_for_an_action(self):
+        # 真实反馈的第二个分析方向："做某个具体动作的人，主要去了哪个平台"——
+        # 这是真正跨轮次的交叉表：respondent_id 相同的人可能这次是在第 1 轮做
+        # 这件事、下次是在第 2 轮，都要能配对到各自当时去的平台。
+        df = _rug_journey_df()
+        long_df = reshape_repeated_rounds(df, ROUNDS)
+        paired = long_df.dropna(subset=["platform"])
+        table = crosstab_counts(paired, group_col="action", answer_col="platform")
+        # "Looking for ideas on what style would work"这个动作，respondent 0 和
+        # respondent 2 都在第 1 轮做过、都去了 Pinterest——分母是"做过这件事的
+        # 2 个人"，不是"长表里这个动作出现的行数"（虽然这次两者恰好相等）。
+        assert table.loc["Pinterest", "Looking for ideas on what style would work"] == format_count_pct(2, 2)
+
+
+class TestLoopPathLengthStats:
+    """锁定"路径长度/退出点"这个派生指标——真实反馈"哪一步之后人们觉得够了可以
+    买了，这是转化临界点"，需要能区分"主动选了退出"和"就是没有再往下填"两种
+    没有更多数据的情况。
+    """
+
+    def test_distinguishes_natural_stop_from_explicit_exit_choice(self):
+        df = _rug_journey_df()
+        result = loop_path_length_stats(df, ROUND_ACTION_COLS, exit_values=[EXIT_OPTION])
+        by_id = {row["respondent_id"]: row for _, row in result.iterrows()}
+
+        # respondent 0（A）：填到第 2 轮就留空，不是主动退出——path_length=2，
+        # exit_round 是 pd.NA。
+        assert by_id[0]["path_length"] == 2
+        assert pd.isna(by_id[0]["exit_round"])
+
+        # respondent 1（B）：第 3 轮主动选了退出——真正走过的是前 2 轮
+        # （path_length=2，退出那一轮不算"做了什么"），exit_round=3。
+        assert by_id[1]["path_length"] == 2
+        assert by_id[1]["exit_round"] == 3
+
+        # respondent 3（D）：走满全部 5 轮，最后一轮本身就是主动退出。
+        assert by_id[3]["path_length"] == 4
+        assert by_id[3]["exit_round"] == 5
+
+    def test_path_length_distribution_matches_manual_count(self):
+        # 4 人里：respondent 0 和 2 都是 2 轮，respondent 1 是 2 轮，
+        # respondent 3 是 4 轮——path_length=2 的应该有 3 人。
+        df = _rug_journey_df()
+        result = loop_path_length_stats(df, ROUND_ACTION_COLS, exit_values=[EXIT_OPTION])
+        distribution = single_choice_stats(result["path_length"].astype(str))
+        counts = {row["option"]: row["n"] for row in distribution}
+        assert counts["2"] == 3
+        assert counts["4"] == 1

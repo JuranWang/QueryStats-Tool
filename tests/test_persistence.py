@@ -443,6 +443,36 @@ def test_save_ai_results_updates_only_ai_part_of_extras(tmp_path):
     conn.close()
 
 
+def test_save_loop_groups_overwrites_wholesale_and_keeps_other_extras(tmp_path):
+    # 真实反馈的"matrix 逻辑"问卷（同一批题目按轮次重复问了好几遍）——题组循环
+    # 分析板块跟交叉分析板块是同一个持久化模式：整份覆盖，保留图片/AI结果/
+    # 交叉分析板块；删掉的板块也从正式库里消失（不是"合并"，是"当前就这些"）。
+    from engine import db
+    from engine.persistence import save_loop_groups
+
+    conn = db.init_db(str(tmp_path / "loop.sqlite"))
+    pid = _project(conn)
+    did = db.add_document(conn, pid, "f.csv", "csv")
+    original = {
+        "images": {"Q1": [{"name": "keep.png"}]},
+        "crosstab_blocks": [{"id": "1"}],
+        "loop_groups": [{"id": "1", "title": "旧板块"}],
+    }
+    db.write_document_extras(conn, did, original)
+    with conn:
+        conn.execute("UPDATE documents SET updated_at = '2000-01-01' WHERE id = ?", (did,))
+
+    new_payload = [{"id": "1", "title": "第一轮到第五轮", "rounds": [], "exit_values": [], "result": None}]
+    save_loop_groups(conn, did, new_payload)
+
+    extras = db.read_document_extras(conn, did)
+    assert extras["loop_groups"] == new_payload
+    assert extras["images"] == original["images"]
+    assert extras["crosstab_blocks"] == original["crosstab_blocks"]
+    assert conn.execute("SELECT updated_at FROM documents WHERE id = ?", (did,)).fetchone()[0] > "2000-01-01"
+    conn.close()
+
+
 def test_save_images_updates_only_requested_question_and_touches_document(tmp_path):
     from engine import db
     from engine.persistence import save_images
