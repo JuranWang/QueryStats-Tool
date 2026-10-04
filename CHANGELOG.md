@@ -7,6 +7,35 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+## 2026-10-03 — v1.6.1
+
+- **修复：双击启动工具"有时候能打开，有时候打不开"** / **Fixed: the double-click
+  launcher sometimes failed to open the app.**
+  - 真实反馈：同事反映这个网页有时候能打开，有时候打不开。
+    Reported: a teammate said the page sometimes opens and sometimes doesn't.
+  - 根源：`启动问卷分析工具.command` 启动本地服务之后，固定 `sleep 4` 秒就直接
+    打开浏览器，完全不检查服务到底有没有真的起来——电脑慢一点、或者是今天
+    第一次启动要多花时间做 import，经常 4 秒还没绑定好端口，浏览器打开看到的
+    就是空白/打不开，看起来像"坏了"，其实只是还没启动完。这不是偶发的运气
+    问题，是脚本本身没有真的等服务就绪就抢先开浏览器。
+    Root cause: after launching the local server, the `.command` launcher waited
+    a fixed 4 seconds and then opened the browser unconditionally, never checking
+    whether the server had actually finished starting. On a slower machine, or on
+    the first run of the day (extra import overhead), 4 seconds often wasn't
+    enough — the browser would open before the port was ready, looking like the
+    app was broken when it just hadn't finished starting.
+  - 修复：改成真的轮询端口是否就绪（最多等 30 秒，就绪就立刻打开，不用等满），
+    真的等满 30 秒还没起来才提示"大概率是真的出了问题"并给出日志文件路径，
+    不再用一个固定、可能不够用的等待时间赌运气。真机测试过：正常启动（几秒内
+    轮询成功）和真的起不来（30 秒后给出明确报错指引）两条路径都验证过。
+    Fixed: the launcher now actually polls until the port responds (up to 30
+    seconds, opening as soon as it's ready rather than always waiting the full
+    time), and only reports a likely real failure — with the log file path — if
+    it's still not up after the full 30 seconds. No longer gambles on a fixed
+    wait that may or may not be long enough. Verified live: both the normal
+    startup path (ready within a few seconds) and the genuine-failure path
+    (clear error message after 30 seconds) were tested end-to-end.
+
 ## 2026-09-29 — v1.6.0
 
 - **新增「题组循环分析」，支持"matrix 逻辑"问卷（同一批题目按轮次重复问了好几

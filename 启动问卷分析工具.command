@@ -27,7 +27,30 @@ if curl -s -o /dev/null http://localhost:8501; then
 else
     echo "正在启动本地服务，第一次启动可能要等几秒……"
     nohup .venv/bin/streamlit run app_streamlit/Home.py --server.headless true > /tmp/questionnaire_tool.log 2>&1 &
-    sleep 4
+
+    # 真实反馈"这个网页有时候能打开，有时候打不开"——原来这里固定等 4 秒就
+    # 直接开浏览器，不管服务到底真的起来了没有；电脑慢一点、或者是今天第一次
+    # 启动要多花时间做 import，经常 4 秒还没绑定好端口，浏览器打开就是空白/
+    # 打不开，看起来像"坏了"，其实只是还没启动完，等一下重新刷新/再点一次
+    # 就好了——这不是运气问题，是这个脚本本身没有真的等服务就绪。改成实际
+    # 轮询端口是不是已经能访问，最多等 30 秒，服务随时就绪就立刻打开，不会再
+    # 因为"刚好比 4 秒慢一点"就失败。
+    ready=false
+    for _ in $(seq 1 30); do
+        if curl -s -o /dev/null http://localhost:8501; then
+            ready=true
+            break
+        fi
+        sleep 1
+    done
+    if [ "$ready" = false ]; then
+        echo ""
+        echo "等了 30 秒服务还是没启动起来，这次不是「碰巧慢一点」，大概率是真的"
+        echo "出了问题——详细报错存在 /tmp/questionnaire_tool.log 这个文件里，"
+        echo "把这个文件的内容发给负责人，或者丢给你自己的 AI 编程工具帮忙看一下。"
+        read -n 1 -s -r -p "按任意键关闭这个窗口..."
+        exit 1
+    fi
 fi
 
 open http://localhost:8501
