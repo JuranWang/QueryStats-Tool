@@ -7,6 +7,35 @@
 往上加一位：只是修 bug 加最后一位（v1.0.0 → v1.0.1），加了新功能加中间一位
 （v1.0.1 → v1.1.0），大改动/不兼容旧数据才加第一位。
 
+**更新时的重要提醒**：装新版本时，默认应该把电脑上旧的那份代码文件夹删掉（或者在
+同一个文件夹里 `git pull`，不要每次都重新 `git clone` 到一个新文件夹）——同一台电脑
+上留着好几份不同版本的代码，自己也会搞混到底在用哪一份、改的东西有没有生效。
+
+## 2026-10-03 — v1.6.2
+
+- **设置页暂时下架 Qwen 百炼 Coding Plan 这个供应商选项** / **Temporarily removed
+  the Qwen Bailian "Coding Plan" option from the provider settings page.**
+  - 真实反馈：内部团队共享的这把 Coding Plan key 测了好几次都是
+    `invalid access token or token expired`，账号侧的问题一直没恢复，现在没有一把
+    能用的 key 配这个选项，放在下拉框里同事选了也用不了。
+    Reported: the team's shared Coding Plan key keeps failing with `invalid access
+    token or token expired` — an account-side issue that hasn't resolved. With no
+    working key, leaving this option visible just lets people pick something that
+    won't work.
+  - 从"API / 模型设置"页的供应商下拉框、状态栏、翻译专用供应商下拉框里暂时移除
+    （`app_streamlit/views/home_view.py` 的 `PROVIDER_LABELS`/`PROVIDER_SHORT_LABELS`），
+    底层的供应商实现（`engine/llm_provider.py` 里 `qwen_coding_plan`/
+    `qwen_coding_plan_intl` 两个注册条目）**没有删**——以后想清楚要怎么重新配置
+    这个套餐，把这两行标签加回来就行，不用再碰 engine 那边的代码。内部共享的那把
+    已确认报废的 key 也一并从 `engine/internal_defaults.py`（私有仓库专属文件）
+    里删掉了。
+    Temporarily removed from the provider dropdown, the status row, and the
+    translation-specific provider dropdown on the "API / Model settings" page. The
+    underlying provider implementation is untouched — re-adding the two label
+    entries is enough to bring the option back once there's a working key. The
+    confirmed-dead shared key was also removed from `engine/internal_defaults.py`
+    (the private-repo-only file).
+
 ## 2026-10-03 — v1.6.1
 
 - **修复：双击启动工具"有时候能打开，有时候打不开"** / **Fixed: the double-click

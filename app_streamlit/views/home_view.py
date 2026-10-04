@@ -169,12 +169,13 @@ PROVIDER_LABELS = {
     # 不确定自己是哪种账号的话，两个都试一下就知道了。
     "qwen": "Qwen（通义千问，大陆账号，直连 DashScope）",
     "qwen_intl": "Qwen（通义千问，国际/新加坡账号，DashScope International）",
-    # "Coding Plan"（key 格式 sk-sp-xxx）是阿里云百炼跟 Token Plan/按量付费完全
-    # 隔离的第三种套餐，必须配自己专属的域名，混用会 401/403——跟上面 qwen 那条
-    # 是不一样的坑，不能靠"多试几个 Qwen 选项"碰出来，需要一眼就能看到这是个
-    # 独立选项。
-    "qwen_coding_plan": "Qwen（通义千问，百炼 Coding Plan 套餐，大陆，key 形如 sk-sp-xxx）",
-    "qwen_coding_plan_intl": "Qwen（通义千问，百炼 Coding Plan 套餐，国际，key 形如 sk-sp-xxx）",
+    # 2026-10-03：Qwen 百炼 "Coding Plan" 套餐（key 格式 sk-sp-xxx）从设置页的可选
+    # 供应商列表里暂时移除——内部团队共享的这把 Coding Plan key 真机测过确认报废
+    # （invalid access token or token expired，账号侧问题），现在没有一把能用的
+    # key 配这个选项，放在下拉框里只会让同事选了却用不了。底层的供应商实现
+    # （engine/llm_provider.py 的 "qwen_coding_plan"/"qwen_coding_plan_intl"
+    # 两个注册条目）**没有删**，等以后想清楚要不要/怎么重新配置这个套餐，
+    # 把这两行加回来就行，不用改 engine 那边的代码。
     "grok": "Grok（xAI）",
     "openrouter": "OpenRouter（聚合网关，模型名要带厂商前缀，比如 qwen/qwen-turbo）",
     # MiniMax 的大陆/国际账号是两个不同域名（api.minimaxi.com / api.minimax.io），
@@ -245,8 +246,6 @@ PROVIDER_SHORT_LABELS = {
     "kimi": "Kimi",
     "qwen": "Qwen(大陆)",
     "qwen_intl": "Qwen(国际)",
-    "qwen_coding_plan": "Qwen(Coding Plan)",
-    "qwen_coding_plan_intl": "Qwen(Coding Plan国际)",
     "grok": "Grok",
     "openrouter": "OpenRouter",
     "minimax": "MiniMax(国际)",
