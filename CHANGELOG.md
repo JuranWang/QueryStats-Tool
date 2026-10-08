@@ -11,6 +11,12 @@
 同一个文件夹里 `git pull`，不要每次都重新 `git clone` 到一个新文件夹）——同一台电脑
 上留着好几份不同版本的代码，自己也会搞混到底在用哪一份、改的东西有没有生效。
 
+## 2026-10-08 — v1.8.1
+
+- **调整：账号密码统一改成全小写拼音** / **Changed: account passwords are now
+  all-lowercase Pinyin (no capitalization required).**
+  - 真实反馈："第一个字母都改成小写，不要增加无意义的成本"。
+
 ## 2026-10-08 — v1.8.0
 
 - **新增：账号登录 + 按账号数据隔离 + 项目公开分享** / **New: account login, per-account

@@ -26,7 +26,7 @@ def require_login() -> str:
         return account
 
     st.title(t("登录"))
-    st.caption(t("账号是你的名字，密码是名字的拼音（首字母大写）。"))
+    st.caption(t("账号是你的名字，密码是名字的全小写拼音。"))
     with st.expander(t("忘记密码了？点开看提示")):
         for name, pwd in ACCOUNTS.items():
             st.caption(f"{name}：{pwd}")

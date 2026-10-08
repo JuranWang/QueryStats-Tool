@@ -57,8 +57,8 @@ EN_APP: dict[str, str] = {
     "取消公开": "Unpublish",
     "设为公开": "Make public",
     "登录": "Log in",
-    "账号是你的名字，密码是名字的拼音（首字母大写）。":
-        "Your account is your name; the password is its Pinyin spelling (capitalized).",
+    "账号是你的名字，密码是名字的全小写拼音。":
+        "Your account is your name; the password is its Pinyin spelling, all lowercase.",
     "忘记密码了？点开看提示": "Forgot your password? Click here for a hint",
     "账号": "Account",
     "密码": "Password",
