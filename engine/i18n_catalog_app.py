@@ -51,6 +51,20 @@ EN_APP: dict[str, str] = {
         "1st place scores {max_rank} points, 2nd place scores {second_score}, and so on down to 1 point "
         "for last place; each option's points are summed across all respondents, and the highest total "
         "ranks 1st overall.",
+    "{owner} · 仅自己可见": "{owner} · visible only to you",
+    "{owner} · 已公开，所有账号可见": "{owner} · public, visible to every account",
+    "共有": "shared",
+    "取消公开": "Unpublish",
+    "设为公开": "Make public",
+    "登录": "Log in",
+    "账号是你的名字，密码是名字的拼音（首字母大写）。":
+        "Your account is your name; the password is its Pinyin spelling (capitalized).",
+    "忘记密码了？点开看提示": "Forgot your password? Click here for a hint",
+    "账号": "Account",
+    "密码": "Password",
+    "密码不对，再试一下——提示就在上面「忘记密码了？」里。":
+        "Wrong password — try again. The hint is in “Forgot your password?” above.",
+    "{account} · 退出登录": "{account} · Log out",
     "上传新图片": "Upload new images",
     "从其他题目复制": "Copy from other questions",
     "同一张图要用在好几道题时，不用重新从电脑上传——点「添加到本题」直接复用这份分析里已经传过的图。":

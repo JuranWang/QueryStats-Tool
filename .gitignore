@@ -32,3 +32,8 @@ resume-claude-code.md
 # 是防止本地切分支时残留的文件被 `git add -A` 误提交进这个公开仓库，不是"这个文件
 # 不重要"的意思——见 engine/internal_defaults.py 文件头的完整说明。
 engine/internal_defaults.py
+
+# 同一个道理：内部团队的真实账号名单+密码（engine/accounts.py 的真实数据来源），
+# 不能出现在公开仓库的 git 历史里，谁都能在 GitHub 上看到。公开仓库里没有这个
+# 文件时，engine/accounts.py 会退回一个占位账号，见该文件头部说明。
+engine/internal_accounts.py

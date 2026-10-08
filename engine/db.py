@@ -26,6 +26,12 @@ CREATE TABLE IF NOT EXISTS projects (
     -- 或者已经被人手动重命名过、确认过的。首页用这个字段做"自动/手动"筛选，不然
     -- 自动占位项目会跟真正的项目混在一起，列表越滚越长。
     origin TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'auto')),
+    -- 部署到云端、多个具名账号共用一个数据库之后新加的两列：owner 记这个项目是
+    -- 哪个账号建的（NULL＝部署前的老数据，没有归属，首页对所有账号都显示，相当于
+    -- "大家共有"，不强行拉人认领）；is_public 是账号自己选择"要不要把这份问卷结果
+    -- 公开给其他账号看"的开关，默认 0（不公开）。见 engine/accounts.py。
+    owner TEXT,
+    is_public INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -267,6 +273,12 @@ def _migrate_add_missing_columns(conn: sqlite3.Connection) -> None:
             # 改动之前 app.py 自动建的占位项目（旧代码把这个名字写死了）——回填成
             # origin='auto'，首页的自动/手动筛选对老数据也立刻生效，不用手动一个个标记。
             conn.execute("UPDATE projects SET origin = 'auto' WHERE name = '未命名项目'")
+    if "owner" not in project_columns:
+        with conn:
+            conn.execute("ALTER TABLE projects ADD COLUMN owner TEXT")
+    if "is_public" not in project_columns:
+        with conn:
+            conn.execute("ALTER TABLE projects ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0")
 
 
 def _migrate_questions_allow_ranking_type(conn: sqlite3.Connection) -> None:
@@ -349,13 +361,22 @@ def create_project(
     source_lang: str,
     target_lang: str,
     origin: str = "manual",
+    owner: str | None = None,
 ) -> int:
     with conn:
         cursor = conn.execute(
-            "INSERT INTO projects (name, source_lang, target_lang, origin) VALUES (?, ?, ?, ?)",
-            (name, source_lang, target_lang, origin),
+            "INSERT INTO projects (name, source_lang, target_lang, origin, owner) VALUES (?, ?, ?, ?, ?)",
+            (name, source_lang, target_lang, origin, owner),
         )
     return int(cursor.lastrowid)
+
+
+def set_project_public(conn: sqlite3.Connection, project_id: int, is_public: bool) -> None:
+    with conn:
+        conn.execute(
+            "UPDATE projects SET is_public = ? WHERE id = ?",
+            (1 if is_public else 0, project_id),
+        )
 
 
 def add_document(

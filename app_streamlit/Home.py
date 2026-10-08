@@ -24,13 +24,16 @@ import streamlit as st
 from engine import db
 from engine.i18n import t
 from app_streamlit.lang_ui import init_language, render_language_switch
+from app_streamlit.auth_ui import require_login, render_account_bar
 
 _conn = st.session_state.get("db_conn") or db.init_db(str(PROJECT_ROOT / "data" / "app.db"))
 st.session_state["db_conn"] = _conn
 init_language(_conn)
 
 st.set_page_config(page_title=t("问卷可视化分析工具"), layout="wide", initial_sidebar_state="expanded")
+require_login()
 render_language_switch(_conn)
+render_account_bar()
 
 pages = [
     st.Page("views/home_view.py", title=t("首页"), default=True),

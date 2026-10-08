@@ -32,7 +32,7 @@ from engine.ingest import Question
 
 
 EXPECTED_COLUMNS = {
-    "projects": ["id", "name", "source_lang", "target_lang", "origin", "created_at", "updated_at"],
+    "projects": ["id", "name", "source_lang", "target_lang", "origin", "owner", "is_public", "created_at", "updated_at"],
     "documents": [
         "id",
         "project_id",

@@ -31,6 +31,7 @@ def get_conn():
 
 conn = get_conn()
 init_language(conn)
+current_account = st.session_state.get("current_account")
 
 st.title(t('问卷可视化分析工具'))
 st.caption(t('首页：管理项目（对应不同客户）、配置 AI 供应商。'))
@@ -85,9 +86,15 @@ origin_filter = st.radio(
     key="project_origin_filter",
 )
 
-all_projects = conn.execute(
-    "SELECT id, name, source_lang, target_lang, created_at, origin FROM projects ORDER BY id DESC"
+all_projects_raw = conn.execute(
+    "SELECT id, name, source_lang, target_lang, created_at, origin, owner, is_public FROM projects ORDER BY id DESC"
 ).fetchall()
+# 按账号隔离：只看得到自己建的项目 + 别人设为公开的项目 + owner 是 NULL 的老数据
+# （部署前、还没有账号概念时建的项目，算"大家共有"，不强行拉人认领）。
+all_projects = [
+    p for p in all_projects_raw
+    if p["owner"] is None or p["owner"] == current_account or p["is_public"]
+]
 
 if origin_filter == "手动新建":
     projects = [p for p in all_projects if p["origin"] == "manual"]
@@ -102,16 +109,36 @@ elif not projects:
     st.info(t('没有「{origin}」的项目——切到「全部」看看，或者去下面新建一个。', origin=t(origin_filter)))
 else:
     for p in projects:
-        col_name, col_lang, col_open, col_rename, col_delete = st.columns([3, 3, 1, 1, 1])
+        col_name, col_lang, col_open, col_public, col_rename, col_delete = st.columns([3, 3, 1, 1, 1, 1])
         # Translate the system placeholder without changing persisted or user-entered names.
         display_name = t("未命名项目") if p["origin"] == "auto" and p["name"] == "未命名项目" else p["name"]
         col_name.markdown(f"**{display_name}**")
         if p["origin"] == "auto":
             col_name.caption(t('自动生成 · 按问卷题目自动命名，不是手动新建的'))
+        # 账号隔离之后新增的归属/可见范围提示：owner 是 NULL 代表部署前的老数据，
+        # 没有归属，对所有账号显示成"共有"。
+        owner_label = p["owner"] if p["owner"] else t("共有")
+        if p["is_public"]:
+            col_name.caption(t('{owner} · 已公开，所有账号可见', owner=owner_label))
+        else:
+            col_name.caption(t('{owner} · 仅自己可见', owner=owner_label))
         col_lang.caption(t('{source_lang} → {target_lang} · 建于 {created_at}', source_lang=p['source_lang'], target_lang=p['target_lang'], created_at=p['created_at']))
         if col_open.button(t('打开'), key=f"open_project_{p['id']}"):
             st.session_state["current_project_id"] = p["id"]
             st.switch_page("views/project_view.py")
+
+        # 公开/取消公开——只有建这个项目的账号自己能切换；owner 是 NULL 的老数据算
+        # "共有"，谁都能切换（反正本来就对所有账号可见）。
+        can_manage_visibility = p["owner"] is None or p["owner"] == current_account
+        if can_manage_visibility:
+            if p["is_public"]:
+                if col_public.button(t('取消公开'), key=f"unpublish_project_{p['id']}"):
+                    db.set_project_public(conn, p["id"], False)
+                    st.rerun()
+            else:
+                if col_public.button(t('设为公开'), key=f"publish_project_{p['id']}"):
+                    db.set_project_public(conn, p["id"], True)
+                    st.rerun()
 
         with col_rename.popover(t('重命名')):
             new_name = st.text_input(t('新项目名'), value=p["name"], key=f"rename_project_input_{p['id']}")
@@ -143,7 +170,7 @@ with st.expander(t('+ 新建项目')):
             if not name.strip():
                 st.error(t('项目名不能为空。'))
             else:
-                new_id = db.create_project(conn, name.strip(), source_lang, target_lang)
+                new_id = db.create_project(conn, name.strip(), source_lang, target_lang, owner=current_account)
                 st.session_state["current_project_id"] = new_id
                 st.success(t('项目「{name}」创建成功。', name=name))
                 st.switch_page("views/project_view.py")

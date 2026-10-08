@@ -3177,7 +3177,10 @@ with st.container(key="section_paper_6"):
                 auto_name = project_naming.summarize_project_name(naming_provider, units)
             else:
                 auto_name = project_naming.guess_project_name_from_questions(units)
-            project_id = db.create_project(_get_db_conn(), auto_name, "en", "zh-CN", origin="auto")
+            project_id = db.create_project(
+                _get_db_conn(), auto_name, "en", "zh-CN", origin="auto",
+                owner=st.session_state.get("current_account"),
+            )
             st.session_state["current_project_id"] = project_id
         try:
             document_id = persistence.save_analysis(
