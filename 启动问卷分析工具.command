@@ -22,11 +22,88 @@ if [ ! -x ".venv/bin/streamlit" ]; then
     exit 1
 fi
 
-if curl -s -o /dev/null http://localhost:8501; then
+# 固定用 8501 这个端口——不传 --server.port 的话，Streamlit 发现端口被占用会
+# 自己悄悄换到下一个空闲端口（8502、8503……）。真实反馈踩过这个坑："网页还是
+# 打不开"，查下来是浏览器里收藏/固定的标签页停在了 localhost:8502，因为上次
+# 启动时 8501 被占用过、Streamlit 换去了 8502；那次的进程早就不在了，固定标签页
+# 却一直停在那个不会再有东西响应的端口，看起来跟"打不开"一模一样，其实是
+# 开错了地方。固定端口之后，不管什么时候启动，网址永远是同一个，不会出现这种
+# "进程在哪个端口全看运气"的漂移。
+PORT=8501
+URL="http://localhost:${PORT}"
+
+# 真机测试踩到的另一个坑（跟上面端口漂移是两回事）：这个脚本里但凡写
+# "$URL紧跟着没有空格分隔的其它字符"（哪怕只是中文标点），变量就会展开成空——
+# 系统这个 bash 在解析 "$VAR" 后面紧跟的字节时，边界判断有问题，会把后面的内容
+# 一起吞掉。统一写成带花括号的 "${URL}"/"${PORT}" 就不会有这个歧义，不管后面
+# 紧跟的是字母、数字还是中文标点都没事——后面所有变量引用都用这个写法，不再
+# 用裸的 "$VAR"。
+port_responds() {
+    # 真机测试踩到的坑：curl 不加超时的话，遇到"端口被占住但那个进程完全卡死、
+    # 根本不会回任何响应"这种情况（比如进程被系统信号暂停、或者卡在死循环里），
+    # TCP 握手本身能成功，curl 会一直干等回应等到天荒地老——这个函数在脚本里被
+    # 反复调用（判断"要不要启动新服务"、判断"新服务起来了没"），只要卡住一次，
+    # 整个脚本就会跟着没反应，双击之后毫无动静，比"打不开"更难排查。加一个
+    # 合理的超时，卡住的情况几秒内就会被当成"没响应"处理，不会把脚本一起拖死。
+    curl -s -o /dev/null --max-time 2 "${URL}"
+}
+
+if port_responds; then
     echo "服务已经在跑了，直接打开浏览器。"
 else
+    # 端口没有正常响应，但不代表端口是空的——可能是一个卡住/没清理干净的旧
+    # 进程仍然占着这个端口（比如上次关闭终端窗口的方式不对、或者电脑直接睡眠/
+    # 关机导致进程没有正常退出但端口没释放）。这种情况下如果直接启动新的，
+    # Streamlit 会被迫换到别的端口，又会复现上面说的"书签指向错误端口"这个坑，
+    # 所以要先检查、清理掉。只清理确认是这个工具自己（streamlit）的进程，
+    # 不是这个工具的东西一律不碰，交给用户自己处理，不能替用户做主关掉不认识
+    # 的程序。
+    # 真机测试踩到的坑：不加 -sTCP:LISTEN 的话，lsof 连"只是开着一个浏览器标签页
+    # 指向这个端口"的客户端连接（比如 Chrome）都会被一起列出来——那不是"占着
+    # 端口不让新服务启动"的那个监听进程，只是普通访问者，错误地把它当成"不认识
+    # 的占用程序"会让脚本在用户自己浏览器还开着页面的最常见情况下直接报错退出。
+    # 只看真正处于监听状态（LISTEN）的那个进程，才是实际挡住新服务启动端口的。
+    stale_pids=$(lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN -t 2>/dev/null)
+    if [ -n "${stale_pids}" ]; then
+        unknown_found=false
+        for pid in ${stale_pids}; do
+            stale_cmd=$(ps -p "${pid}" -o command= 2>/dev/null)
+            case "${stale_cmd}" in
+                *streamlit*)
+                    echo "端口 ${PORT} 被一个没有正常响应的旧服务进程占用（pid ${pid}），先清理掉……"
+                    kill "${pid}" 2>/dev/null
+                    # 真机测试踩到的坑：礼貌地 kill（SIGTERM）对"真的卡死、完全没在
+                    # 响应"的进程有时候没用——信号会排进队列，但进程卡在那儿根本
+                    # 没机会处理它，端口就一直不会被真正释放，后面重新启动还是会
+                    # 撞上同一个端口冲突。等最多 3 秒，到时候端口还是没放出来，
+                    # 直接上 SIGKILL 强制结束，不留着它继续占用。
+                    for _ in 1 2 3; do
+                        kill -0 "${pid}" 2>/dev/null || break
+                        sleep 1
+                    done
+                    if kill -0 "${pid}" 2>/dev/null; then
+                        echo "这个进程对正常关闭没反应，强制结束它……"
+                        kill -9 "${pid}" 2>/dev/null
+                        sleep 1
+                    fi
+                    ;;
+                *)
+                    unknown_found=true
+                    echo "端口 ${PORT} 被别的程序占用了（pid ${pid}：${stale_cmd}），不是这个工具自己的，"
+                    echo "没法帮你自动处理。"
+                    ;;
+            esac
+        done
+        if [ "${unknown_found}" = true ]; then
+            echo "请先手动关掉占用这个端口的程序，或者找人帮忙看一下，再重新双击这个文件。"
+            read -n 1 -s -r -p "按任意键关闭这个窗口..."
+            exit 1
+        fi
+        sleep 1
+    fi
+
     echo "正在启动本地服务，第一次启动可能要等几秒……"
-    nohup .venv/bin/streamlit run app_streamlit/Home.py --server.headless true > /tmp/questionnaire_tool.log 2>&1 &
+    nohup .venv/bin/streamlit run app_streamlit/Home.py --server.port "${PORT}" --server.headless true > /tmp/questionnaire_tool.log 2>&1 &
 
     # 真实反馈"这个网页有时候能打开，有时候打不开"——原来这里固定等 4 秒就
     # 直接开浏览器，不管服务到底真的起来了没有；电脑慢一点、或者是今天第一次
@@ -37,13 +114,13 @@ else
     # 因为"刚好比 4 秒慢一点"就失败。
     ready=false
     for _ in $(seq 1 30); do
-        if curl -s -o /dev/null http://localhost:8501; then
+        if port_responds; then
             ready=true
             break
         fi
         sleep 1
     done
-    if [ "$ready" = false ]; then
+    if [ "${ready}" = false ]; then
         echo ""
         echo "等了 30 秒服务还是没启动起来，这次不是「碰巧慢一点」，大概率是真的"
         echo "出了问题——详细报错存在 /tmp/questionnaire_tool.log 这个文件里，"
@@ -53,8 +130,8 @@ else
     fi
 fi
 
-open http://localhost:8501
 echo ""
-echo "已经在浏览器里打开了。这个窗口关掉没关系，工具会继续在后台跑着；"
-echo "下次还想用，再双击一次这个文件就行。"
+echo "马上在浏览器里打开（网址固定是 ${URL}，收藏/固定这个标签页放心，不会再变）。"
+echo "这个窗口关掉没关系，工具会继续在后台跑着；下次还想用，再双击一次这个文件就行。"
+open "${URL}"
 sleep 2

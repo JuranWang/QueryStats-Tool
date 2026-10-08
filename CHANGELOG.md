@@ -11,6 +11,56 @@
 同一个文件夹里 `git pull`，不要每次都重新 `git clone` 到一个新文件夹）——同一台电脑
 上留着好几份不同版本的代码，自己也会搞混到底在用哪一份、改的东西有没有生效。
 
+## 2026-10-07 — v1.6.3
+
+- **修复：v1.6.1 修好"等不够就打开"之后，又冒出"网页有时候打不开"的新花样**
+  / **Fixed: new failure modes surfaced after the v1.6.1 startup-wait fix.**
+  - 真实反馈（真实截图复现）：双击启动之后，浏览器里固定/收藏的标签页打开的是
+    `localhost:8502`，报"无法连接服务器"。
+    Reported (reproduced from a real screenshot): the pinned/bookmarked browser
+    tab opened `localhost:8502` and failed with "can't connect to the server".
+  - 根源 1——**端口漂移**：启动脚本一直没有显式固定端口，Streamlit 发现 8501
+    被占用时会自己悄悄换到下一个空闲端口（8502、8503……）。如果电脑上曾经有
+    一个旧进程占着 8501（比如上次关闭方式不对、或者还留着另一份旧代码目录在
+    跑），新启动的服务就会被挤到别的端口；等那个旧进程自己也不在了，之前收藏
+    的标签页却停在了那个再也不会有东西响应的端口号上，看起来和"打不开"一模
+    一样，其实是网址本身就错了。
+    Root cause 1 — **port drift**: the launcher never pinned a port, so Streamlit
+    silently moved to the next free one whenever 8501 was occupied by a leftover
+    process. Once that old process was gone, a tab bookmarked to the drifted port
+    would fail forever, looking identical to "can't open" but actually pointing
+    at the wrong address.
+  - 根源 2——**改之前自己又踩了新坑**：给这次修复做真机验证时，连带测出另外
+    两个之前不存在的真实 bug：① 脚本里原来写的是没加花括号的 `$URL`/`$PORT`，
+    在 Mac 自带的这个 bash 版本上，只要变量后面紧跟着别的字符（哪怕是中文标点）
+    就会被解析器错误地吞掉、展开成空值——改成统一加花括号的 `${URL}`/`${PORT}`。
+    ② 新增的"检测端口是否被占用"逻辑一开始不小心把同一个端口上的普通浏览器
+    客户端连接（比如开着的 Chrome 标签页）也当成"占用者"，必须额外加
+    `-sTCP:LISTEN` 只认真正在监听的那个进程；③ 检测到的旧进程如果已经完全卡死
+    （不响应任何信号），原来只发一次"礼貌关闭"信号就不管了，端口可能永远释放
+    不出来——改成等 3 秒没反应就强制结束；④ 检查服务是否就绪用的 curl 原来没加
+    超时，遇到"端口还在但进程完全卡死不回应"这种情况会直接无限等下去，整个
+    脚本跟着一起卡死——加上超时。四个问题都是写代码时凭经验判断"应该没问题"、
+    真机测试才会暴露出来的真实坑，不是凭空想象的边界情况。
+    Root cause 2 — **new bugs introduced while fixing root cause 1**, all found
+    through live testing, not theoretical: ① unbraced `$URL`/`$PORT` get silently
+    swallowed into an empty expansion on this bash build whenever immediately
+    followed by another character (even CJK punctuation) — fixed by always using
+    `${URL}`/`${PORT}`; ② the new "is the port occupied" check initially also
+    matched an ordinary browser tab's client connection to that port (e.g. an
+    open Chrome tab), not just the actual listener — fixed with `-sTCP:LISTEN`;
+    ③ a genuinely wedged old process that never responds to a polite kill could
+    hold the port forever — escalates to a forced kill after a 3-second grace
+    period; ④ the readiness-check `curl` had no timeout, so a port held open by a
+    completely unresponsive process would hang it (and the whole script)
+    indefinitely — a timeout was added.
+  - 真机验证过全部四条路径：正常冷启动、服务已在跑直接打开、旧进程卡死自动
+    清理重启、端口被不认识的程序占用时安全拒绝不误杀。
+    Verified live across all four paths: normal cold start, already-running fast
+    path, automatic cleanup and restart when the old process is wedged, and a
+    safe refusal (no accidental kill) when the port is held by an unrelated
+    program.
+
 ## 2026-10-03 — v1.6.2
 
 - **设置页暂时下架 Qwen 百炼 Coding Plan 这个供应商选项** / **Temporarily removed
