@@ -103,6 +103,47 @@ def ranking_table(
     ).T
 
 
+def ranking_score_table(
+    df: pd.DataFrame,
+    option_cols: list[str],
+    option_labels: dict[str, str],
+    max_rank: int,
+) -> pd.DataFrame:
+    """真实反馈"排序题新增赋分排名"——一共 N 个选项，排第 1 名得 N 分，排第 2 名
+    得 N-1 分，以此类推，排最后一名得 1 分；把每个选项在所有受访者身上拿到的分
+    加总，总分最高的选项就是赋分排名第 1——这是排序题"把 N 个人各自的排序合并成
+    一个整体排名"最常用的算法（业内一般叫 Borda count），回答的是跟
+    `ranking_table` 不一样的问题：那张表回答"这个选项有多少人排第几"，这张表
+    回答"综合所有人的排序，哪个选项整体更靠前"。
+
+    没排到这个选项的人（该行是空值）不计分、也不计入这个选项的人数基数——跟
+    `ranking_option_stats` 对"这个选项的 N"的算法保持一致，不会因为有人漏填
+    就把分数算错。
+    """
+
+    rows = []
+    for col in option_cols:
+        values = pd.to_numeric(df[col], errors="coerce").dropna()
+        n = len(values)
+        total_score = int(round(((max_rank - values + 1).sum()))) if n else 0
+        mean_score = round(total_score / n, 2) if n else 0.0
+        rows.append({
+            "option": option_labels.get(col, col),
+            "n": n,
+            "total_score": total_score,
+            "mean_score": mean_score,
+        })
+    rows.sort(key=lambda row: row["total_score"], reverse=True)
+    return pd.DataFrame(
+        [
+            [i, row["total_score"], row["mean_score"], row["n"]]
+            for i, row in enumerate(rows, start=1)
+        ],
+        index=[row["option"] for row in rows],
+        columns=[t("赋分排名"), t("总分"), t("平均分"), "N"],
+    )
+
+
 def numeric_stats(series: pd.Series) -> dict:
     """Return descriptive statistics after coercing invalid values to NaN."""
 

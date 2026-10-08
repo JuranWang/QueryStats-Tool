@@ -46,6 +46,11 @@ EN_APP: dict[str, str] = {
         "Automatically detected {count} ranking questions from option column names and rank values, "
         "and grouped them as ranking in the mapping table below. You don't need to edit each group key "
         "manually; adjust them in the table if needed.",
+    "排第 1 名得 {max_rank} 分，排第 2 名得 {second_score} 分，以此类推，排最后一名得 1 分；"
+    "每个选项把所有人给的分加总，总分最高的排第 1。":
+        "1st place scores {max_rank} points, 2nd place scores {second_score}, and so on down to 1 point "
+        "for last place; each option's points are summed across all respondents, and the highest total "
+        "ranks 1st overall.",
     "上传新图片": "Upload new images",
     "从其他题目复制": "Copy from other questions",
     "同一张图要用在好几道题时，不用重新从电脑上传——点「添加到本题」直接复用这份分析里已经传过的图。":

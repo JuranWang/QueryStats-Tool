@@ -2342,6 +2342,18 @@ def render_unit(
 
         st.table(stats.ranking_table(section_df, cols, option_labels_display, max_rank))
 
+        # 真实反馈"排序题新增赋分排名"：N 个选项，排第1名得N分、第2名得N-1分，
+        # 以此类推，加总后总分最高的排赋分第1——跟上面那张表回答的不是同一个
+        # 问题（上面是"这个选项有多少人排第几"，这张是"综合所有人的排序，整体
+        # 哪个选项更靠前"），所以是单独一张表，不是改掉原来那张。
+        st.markdown(f"**{t('赋分排名')}**")
+        st.caption(t(
+            "排第 1 名得 {max_rank} 分，排第 2 名得 {second_score} 分，以此类推，排最后一名得 1 分；"
+            "每个选项把所有人给的分加总，总分最高的排第 1。",
+            max_rank=max_rank, second_score=max_rank - 1,
+        ))
+        st.table(stats.ranking_score_table(section_df, cols, option_labels_display, max_rank))
+
 
 def build_units(mapping: pd.DataFrame) -> list[dict]:
     """把映射表拆成题目单元：多选/排序按同题型、同分类和同分组键合并，其余一行一个单元。"""
@@ -3708,6 +3720,7 @@ with st.container(key="section_paper_11"):
                 option_labels_display = {c: label_map.get(v, v) for c, v in option_labels_raw.items()}
                 stats_by_unit[display_no] = {
                     "table": stats.ranking_table(df_valid, unit["columns"], option_labels_display, max_rank),
+                    "score_table": stats.ranking_score_table(df_valid, unit["columns"], option_labels_display, max_rank),
                 }
                 title_zh_by_unit[display_no] = title_zh
             elif kind == "numeric":

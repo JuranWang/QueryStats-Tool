@@ -8,6 +8,7 @@ from engine.stats import (
     multi_choice_stats,
     numeric_stats,
     ranking_option_stats,
+    ranking_score_table,
     ranking_table,
     reshape_repeated_rounds,
     single_choice_stats,
@@ -417,3 +418,82 @@ class TestLoopPathLengthStats:
         counts = {row["option"]: row["n"] for row in distribution}
         assert counts["2"] == 3
         assert counts["4"] == 1
+
+
+class TestRankingScoreTable:
+    """真实反馈"排序题新增赋分排名"——一共 N 个选项，排第 1 名得 N 分，排第 2 名
+    得 N-1 分，以此类推；每个选项把所有受访者给的分加总，总分最高的排赋分
+    排名第 1。这跟 `ranking_table`（"这个选项有多少人排第几"）是两个不同的
+    问题，`ranking_table` 已有的测试不覆盖这个。
+    """
+
+    def test_matches_hand_computed_three_option_example(self):
+        # 3 个选项、4 个人，手算验证：A 全排第 1（4 人 × 3 分=12），B 全排第 2
+        # （4 人 × 2 分=8），C 全排第 3（4 人 × 1 分=4）——顺序应该是 A > B > C。
+        df = pd.DataFrame({
+            "colA": [1, 1, 1, 1],
+            "colB": [2, 2, 2, 2],
+            "colC": [3, 3, 3, 3],
+        })
+        table = ranking_score_table(
+            df, ["colA", "colB", "colC"], {"colA": "A", "colB": "B", "colC": "C"}, max_rank=3,
+        )
+        assert list(table.index) == ["A", "B", "C"]
+        assert table["总分"].tolist() == [12, 8, 4]
+        assert table["平均分"].tolist() == [3.0, 2.0, 1.0]
+        assert table["赋分排名"].tolist() == [1, 2, 3]
+        assert table["N"].tolist() == [4, 4, 4]
+
+    def test_missing_values_are_excluded_from_both_score_and_base(self):
+        # 真实数据里偶尔会有人漏填某个选项的排名（NaN）——这个人不该给这个选项
+        # 加分，也不该被算进这个选项的 N 里（照 ranking_option_stats 的同一个
+        # 规则），不能当成"排最后一名"或者"0 分"处理。
+        df = pd.DataFrame({
+            "colA": [1, 2, None],  # 第3人没填A，只按前2人算：3+2=5分，N=2
+            "colB": [2, 1, 1],     # 3人都填了：2+3+3=8分，N=3
+        })
+        table = ranking_score_table(df, ["colA", "colB"], {"colA": "A", "colB": "B"}, max_rank=3)
+        assert table.loc["A", "总分"] == 5
+        assert table.loc["A", "N"] == 2
+        assert table.loc["B", "总分"] == 8
+        assert table.loc["B", "N"] == 3
+        # B 总分更高，排赋分第1。
+        assert list(table.index) == ["B", "A"]
+
+    def test_matches_real_reported_furniture_ranking_survey(self):
+        # 真实反馈截图里的那道排序题（Q7"哪个家具最让你有归属感"，7个选项、
+        # 450人）——这组"第几名有多少人选"的计数直接照抄真实报告里的
+        # 名次×选项表，不是编的。手算过：床 383×7+38×6+11×5+9×4+4×3+3×2+2×1
+        # =3020 分最高，沙发 2493 分第二，这俩跟原始数据里"床几乎垄断第1名
+        # （85%）、沙发几乎垄断第2名（59%）"的直觉吻合，可以当真实场景的回归锚点。
+        rank_counts = {
+            "餐桌": [13, 71, 174, 87, 52, 34, 19],
+            "落地灯": [4, 17, 33, 60, 75, 104, 157],
+            "沙发": [37, 267, 84, 40, 12, 6, 4],
+            "床": [383, 38, 11, 9, 4, 3, 2],
+            "地毯": [5, 16, 63, 67, 75, 106, 118],
+            "茶几": [5, 16, 36, 90, 133, 110, 60],
+            "柜子": [3, 25, 49, 97, 99, 87, 90],
+        }
+        columns = {}
+        for option, counts in rank_counts.items():
+            values = []
+            for rank, count in enumerate(counts, start=1):
+                values.extend([rank] * count)
+            columns[option] = values
+        df = pd.DataFrame(columns)
+
+        table = ranking_score_table(
+            df, list(rank_counts), {c: c for c in rank_counts}, max_rank=7,
+        )
+
+        assert list(table.index) == ["床", "沙发", "餐桌", "柜子", "茶几", "地毯", "落地灯"]
+        assert table.loc["床", "总分"] == 3020
+        assert table.loc["沙发", "总分"] == 2493
+        assert table.loc["餐桌", "总分"] == 1978
+        assert table.loc["柜子", "总分"] == 1365
+        assert table.loc["茶几", "总分"] == 1350
+        assert table.loc["地毯", "总分"] == 1269
+        assert table.loc["落地灯", "总分"] == 1125
+        assert table["赋分排名"].tolist() == [1, 2, 3, 4, 5, 6, 7]
+        assert table["N"].tolist() == [450] * 7

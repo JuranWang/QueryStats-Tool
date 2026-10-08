@@ -666,6 +666,21 @@ def export_analysis_to_docx(
                     for index_value, row in dataframe.iterrows()
                 ]
                 _add_table(document, headers, rows)
+
+                # 真实反馈"排序题新增赋分排名"——跟上面那张表是两个不同的问题
+                # （上面是"这个选项有多少人排第几"，这张是"综合所有人的排序，
+                # 整体哪个选项更靠前"），单独起一个小标题 + 一张表，不混进上面
+                # 那张表里。
+                score_table = stats_result.get("score_table")
+                if score_table is not None:
+                    score_heading = document.add_paragraph()
+                    score_heading.add_run(t('赋分排名')).bold = True
+                    score_headers = [t('选项'), *[str(column) for column in score_table.columns]]
+                    score_rows = [
+                        [index_value, *row.tolist()]
+                        for index_value, row in score_table.iterrows()
+                    ]
+                    _add_table(document, score_headers, score_rows)
             elif kind == "numeric":
                 _add_table(
                     document,

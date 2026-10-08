@@ -5,6 +5,10 @@ from __future__ import annotations
 EN_MISC: dict[str, str] = {
     '排序题': 'Ranking',
     '第{rank}名': 'Rank {rank}',
+    '赋分排名': 'Scored ranking',
+    '总分': 'Total score',
+    '平均分': 'Average score',
+    '选项': 'Option',
     '首页': 'Home',
     '项目工作区': 'Project workspace',
     '问卷分析': 'Survey analysis',
