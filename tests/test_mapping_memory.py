@@ -226,6 +226,8 @@ def _get_db_conn():
     return st.session_state["__TEST__conn"]
 def guess_is_platform_column(column):
     return False
+def guess_is_screening_column(column):
+    return False
 df_all = st.session_state["__TEST__data"]
 ''' + block)
     app.session_state["__TEST__conn"] = conn

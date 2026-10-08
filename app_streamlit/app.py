@@ -548,6 +548,21 @@ def guess_is_platform_column(col_name: str) -> bool:
     return any(keyword in lowered for keyword in _PLATFORM_KEYWORDS)
 
 
+# Tally（以及不少其它问卷平台）给题号编号的约定是"S"开头＝筛选题（Screener），
+# "Q"开头＝正式问卷——这个工具自己生成的展示题号（SECTION_PREFIX 那张表）用的
+# 也是同一个约定，不是巧合。真实反馈："它识别筛选题的逻辑是错误的，如果是
+# Tally 问卷平台回收的结果，S 开头的问题都是筛选问题"——原来自动映射的默认
+# 分类压根没有这条规则，不管题干写的是什么，默认统统是"正式"，筛选题每次都要
+# 手动一道一道改；Tally 导出的原始列名其实已经自带了这个信号（比如"S1. Which
+# of these have you bought..."），没有理由不用上。只匹配"S + 数字 + 紧跟的
+# 标点"这种明确的编号写法（不是任意含字母 S 的题干都算），避免误伤正常问题。
+_SCREENING_QUESTION_NUMBER_RE = re.compile(r"^S\d+[.\)、．]")
+
+
+def guess_is_screening_column(col_name: str) -> bool:
+    return bool(_SCREENING_QUESTION_NUMBER_RE.match(col_name.strip()))
+
+
 _PLATFORM_SOURCE_HINTS = {
     "prolific": "Prolific",
     "credamo": "Credamo 见数",
@@ -2661,8 +2676,9 @@ with st.expander(t("原始数据"), expanded=not st.session_state.get("generated
                 continue
             if col in column_to_group:
                 group_key, prefix, group_type = column_to_group[col]
+                group_section = "筛选" if guess_is_screening_column(prefix) else "正式"
                 default_rows.append(
-                    {"column": col, "q_type": group_type, "section": "正式", "q_no": group_key, "title": prefix}
+                    {"column": col, "q_type": group_type, "section": group_section, "q_no": group_key, "title": prefix}
                 )
                 continue
             if guess_is_platform_column(col):
@@ -2683,7 +2699,7 @@ with st.expander(t("原始数据"), expanded=not st.session_state.get("generated
                 {
                     "column": col,
                     "q_type": guess,
-                    "section": "正式",
+                    "section": "筛选" if guess_is_screening_column(col) else "正式",
                     "q_no": f"g{i + 1}",
                     "title": col,
                 }

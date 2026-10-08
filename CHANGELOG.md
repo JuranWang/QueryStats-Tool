@@ -11,6 +11,48 @@
 同一个文件夹里 `git pull`，不要每次都重新 `git clone` 到一个新文件夹）——同一台电脑
 上留着好几份不同版本的代码，自己也会搞混到底在用哪一份、改的东西有没有生效。
 
+## 2026-10-07 — v1.6.4
+
+- **修复：数据映射自动分类识别不出筛选题** / **Fixed: auto-mapping never
+  recognized screening questions.**
+  - 真实反馈："它识别筛选题的逻辑是错误的，如果是 Tally 问卷平台回收的结果，
+    S 开头的问题都是筛选问题"。查下来是原来压根没有这条规则——不管题干写的
+    是什么，自动映射的默认分类统统是"正式"，筛选题每次都要在映射表里手动
+    一道一道改成"筛选"。
+    Reported: "the screening-question detection logic is wrong — for Tally
+    exports, every question whose number starts with S is a screening
+    question." The actual cause: there was no such rule at all — every column
+    defaulted to "正式" (official) regardless of its question text, so
+    screening questions always had to be manually reclassified one at a time.
+  - 新增 `guess_is_screening_column()`：识别"S + 数字 + 紧跟的标点"这种编号
+    写法（比如 Tally 导出的"S1. Which of these have you bought..."），命中就
+    默认分类成"筛选"而不是"正式"——这个规则同时覆盖单选筛选题和多选筛选题
+    （多选题组按共享的题干判断，不是按某一列单独判断）。这不是巧合：这个
+    工具自己生成的展示题号（S1/Q1/C1…）用的就是同一个"S=筛选、Q=正式"的
+    编号约定，只是之前从没有反过来拿这个约定去读原始数据。只匹配"S+数字+
+    标点"开头这种明确写法，不会把题干里随便出现的字母 S 也误判成筛选题。
+    Added `guess_is_screening_column()`: recognizes the "S + number + a
+    following punctuation mark" numbering pattern (e.g. Tally's "S1. Which of
+    these have you bought..."), defaulting such columns to "筛选" (screening)
+    instead of "正式" — covering both single-choice and multi-select screening
+    questions (multi-select groups are judged by their shared question stem,
+    not per individual option column). This mirrors the tool's own
+    S-for-screening / Q-for-official numbering convention for generated
+    question labels; it just hadn't been applied in reverse to read incoming
+    data before. Matches only the explicit "S + digits + punctuation" prefix,
+    so an ordinary question that happens to contain the letter S elsewhere
+    isn't misclassified.
+  - 新增 10 条单元测试（锁定匹配规则，含"S 开头但不是编号格式""S 不在开头"
+    这类不该误判的反例）+ 2 条集成测试（跑真实的"数据映射"自动分类代码，
+    不是在测试里重新抄一遍判断逻辑）+ 真机验收：上传一份 Tally 结构的 CSV，
+    截图确认映射表里 S1/S2 两行「分类」列显示的确实是「筛选」。
+    Added 10 unit tests (including negative cases — "S-prefixed but not the
+    numbering format," "S not at the start" — that must *not* match) plus 2
+    integration tests that exercise the real auto-mapping code path (not a
+    reimplementation of the logic), and live verification: uploaded a
+    Tally-shaped CSV and confirmed in a screenshot that the mapping table
+    actually shows "筛选" for the S1/S2 rows.
+
 ## 2026-10-07 — v1.6.3
 
 - **修复：v1.6.1 修好"等不够就打开"之后，又冒出"网页有时候打不开"的新花样**

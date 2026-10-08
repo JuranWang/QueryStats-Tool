@@ -62,6 +62,8 @@ def _get_db_conn():
     return st.session_state["__TEST__conn"]
 def guess_is_platform_column(column):
     return False
+def guess_is_screening_column(column):
+    return False
 def _translation_cache():
     return st.session_state["__TEST__cache"]
 def _get_provider_or_none(purpose):
